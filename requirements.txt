@@ -1,0 +1,5 @@
+cirro>=1.2.15
+pandas
+plotly
+marimo
+urllib3
