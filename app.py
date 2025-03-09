@@ -607,7 +607,7 @@ def _(
                 col=1,
                 showlegend=False,
                 text=[
-                    f"{bin_id}<br>{self.adata.var.loc[bin_id, "n_genes"]:,} Genes"
+                    f"{bin_id}<br>{self.adata.var.loc[bin_id, 'n_genes']:,} Genes"
                     for bin_id in bin_order
                 ],
                 hovertemplate="%{text}<extra></extra>"
