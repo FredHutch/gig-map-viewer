@@ -1,7 +1,7 @@
 import marimo
 
 __generated_with = "0.11.2"
-app = marimo.App(width="medium", app_title="Marimo Viewer: Cirro")
+app = marimo.App(width="medium", app_title="Pangenome Viewer ")
 
 
 @app.cell
