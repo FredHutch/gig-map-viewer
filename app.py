@@ -561,7 +561,7 @@ def _(
         # def plot_bins_scatter(self):
         #     """Make a scatter plot with bin information."""
 
-        def plot_heatmap(self, min_bin_size=1, height=500):
+        def plot_heatmap(self, min_bin_size=1, height=800):
             """Make a heatmap showing which bins are present in which genomes."""
 
             present = (
@@ -756,7 +756,7 @@ def _(mo, pangenome_dataset_ui):
             height=mo.ui.number(
                 label="Figure Height",
                 start=100,
-                value=500
+                value=800
             )
     )
     # Stop if the user has not selected a dataset
@@ -867,7 +867,7 @@ def _(mo, pg):
         height=mo.ui.number(
             label="Figure Height:",
             start=100,
-            value=500
+            value=800
         )
     )
     bin_overlap_args
