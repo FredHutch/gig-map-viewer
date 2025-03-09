@@ -620,7 +620,7 @@ def _(
                 col=2,
                 showlegend=False,
                 text=[
-                    f"{genome_id}<br>{self.adata.obs.loc[genome_id, "n_genes"]:,} Genes"
+                    f"{genome_id}<br>{self.adata.obs.loc[genome_id, 'n_genes']:,} Genes"
                     for genome_id in genome_order
                 ],
                 hovertemplate="%{text}<extra></extra>"
@@ -633,7 +633,7 @@ def _(
                 col=3,
                 showlegend=False,
                 text=[
-                    f"{genome_id}<br>{self.adata.obs.loc[genome_id, "monophyly"]:,} Monophyly Score"
+                    f"{genome_id}<br>{self.adata.obs.loc[genome_id, 'monophyly']:,} Monophyly Score"
                     for genome_id in genome_order
                 ],
                 hovertemplate="%{text}<extra></extra>"
@@ -645,7 +645,7 @@ def _(
                 col=1,
                 showlegend=False,
                 text=[
-                    f"{bin_id}<br>{self.adata.var.loc[bin_id, "monophyly"]:,} Monophyly Score"
+                    f"{bin_id}<br>{self.adata.var.loc[bin_id, 'monophyly']:,} Monophyly Score"
                     for bin_id in bin_order
                 ],
                 hovertemplate="%{text}<extra></extra>"
@@ -657,7 +657,7 @@ def _(
                 col=1,
                 showlegend=False,
                 text=[
-                    f"{bin_id}<br>{self.adata.var.loc[bin_id, "prevalence"]:,} Prevalence"
+                    f"{bin_id}<br>{self.adata.var.loc[bin_id, 'prevalence']:,} Prevalence"
                     for bin_id in bin_order
                 ],
                 hovertemplate="%{text}<extra></extra>"
