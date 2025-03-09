@@ -55,7 +55,7 @@ async def _(micropip, mo, running_in_wasm):
         from io import StringIO, BytesIO
         from queue import Queue
         from time import sleep
-        from typing import Dict, Optional
+        from typing import Dict, Optional, List
         import plotly.express as px
         import plotly.graph_objects as go
         from plotly.subplots import make_subplots
@@ -103,6 +103,7 @@ async def _(micropip, mo, running_in_wasm):
         quote_plus,
         sleep,
         spatial,
+        List
     )
 
 
