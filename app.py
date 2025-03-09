@@ -207,7 +207,7 @@ def _(get_client, mo):
 @app.cell
 def _(get_client, mo):
     mo.stop(get_client() is not None)
-    mo.md("Log in to view data")
+    mo.md("*_Log in to view data_*")
     return
 
 
@@ -874,7 +874,8 @@ def _(mo, pg):
 
 
 @app.cell
-def _(mo):
+def _(mo, pangenome_dataset_ui):
+    mo.stop(pangenome_dataset_ui.value is None)
     genome_annot_enabled_ui=mo.ui.checkbox(
         label="Annotate Genomes",
         value=False
@@ -976,7 +977,7 @@ def _(make_subplots, pd, pg_display):
                     ),
                     showlegend=False
                 )
-            
+
         fig.add_scatter(
             x=points["x"],
             y=points["y"],
