@@ -43,6 +43,7 @@ async def _(micropip, mo, running_in_wasm):
             await micropip.install("ssl")
             micropip.uninstall("urllib3")
             micropip.uninstall("httpx")
+            await micropip.install("httpx==0.26.0")
             await micropip.install("urllib3==2.3.0")
             await micropip.install("botocore==1.36.23")
             await micropip.install("jmespath==1.0.1")
@@ -50,7 +51,6 @@ async def _(micropip, mo, running_in_wasm):
             await micropip.install("boto3==1.36.23")
             await micropip.install("aiobotocore==2.20.0")
             await micropip.install("cirro[pyodide]>=1.2.16")
-            await micropip.install("umap-learn", verbose=True)
 
         from io import StringIO, BytesIO
         from queue import Queue
@@ -202,6 +202,13 @@ def _(get_client, mo):
     client = get_client()
     mo.stop(client is None)
     return (client,)
+
+
+@app.cell
+def _(get_client, mo):
+    mo.stop(get_client() is not None)
+    mo.md("Log in to view data")
+    return
 
 
 @app.cell
@@ -410,7 +417,7 @@ def _(
 
 
 @app.cell
-def _(mo):
+def _(mo, pangenome_dataset_ui):
     # The user can apply filters for visualizing the pangenome
     pangenome_args = (
         mo.md("""
@@ -433,6 +440,8 @@ def _(mo):
             )
         )
     )
+    # Stop if the user has not selected a dataset
+    mo.stop(pangenome_dataset_ui.value is None)
     pangenome_args
     return (pangenome_args,)
 
@@ -731,7 +740,7 @@ def _():
 
 
 @app.cell
-def _(mo):
+def _(mo, pangenome_dataset_ui):
     heatmap_options_ui = mo.md("""
     ### Genome Heatmap Options
 
@@ -749,6 +758,8 @@ def _(mo):
                 value=500
             )
     )
+    # Stop if the user has not selected a dataset
+    mo.stop(pangenome_dataset_ui.value is None)
     heatmap_options_ui
     return (heatmap_options_ui,)
 
@@ -843,11 +854,19 @@ def _(mo, pg):
     ### Show Bin Overlap
 
     {bins}
+
+    {height}
+
     """).batch(
         bins=mo.ui.multiselect(
             label="Bins:",
             options=sorted(pg.adata.var_names, key=lambda bin_id: int(bin_id.split(" ")[-1])),
             value=["Bin 1", "Bin 2"]
+        ),
+        height=mo.ui.number(
+            label="Figure Height:",
+            start=100,
+            value=500
         )
     )
     bin_overlap_args
@@ -855,8 +874,58 @@ def _(mo, pg):
 
 
 @app.cell
+def _(mo):
+    genome_annot_enabled_ui=mo.ui.checkbox(
+        label="Annotate Genomes",
+        value=False
+    )
+    genome_annot_enabled_ui
+    return (genome_annot_enabled_ui,)
+
+
+@app.cell
+def _(genome_annot_enabled_ui, mo, pg):
+    genome_annot_ui=mo.ui.dropdown(
+        label="Annotation Column:",
+        options=(
+            ['None'] + pg.adata.obs_keys()
+            if genome_annot_enabled_ui.value
+            else ['None']
+        )
+        ,
+        value=(
+            "assemblyInfo_biosample_description_organism_organismName"
+            if ("assemblyInfo_biosample_description_organism_organismName" in pg.adata.obs_keys()) and genome_annot_enabled_ui.value
+            else 'None'
+        )
+    )
+    genome_annot_ui
+    return (genome_annot_ui,)
+
+
+@app.cell
+def _(genome_annot_ui, mo, pg):
+    # If an annotation is selected, let the user pick the groups
+    def genome_annot_groups_options():
+        return (
+            []
+            if genome_annot_ui.value == 'None'
+            else
+            pg.adata.obs[genome_annot_ui.value].drop_duplicates().sort_values().values
+        )
+
+    genome_annot_groups = mo.ui.multiselect(
+        label="Include Groups:",
+        options=genome_annot_groups_options(),
+        value=genome_annot_groups_options()
+    )
+    genome_annot_groups
+    return genome_annot_groups, genome_annot_groups_options
+
+
+@app.cell
 def _(make_subplots, pd, pg_display):
-    def show_bin_overlap(bins: list):
+    def show_bin_overlap(bins: list, height: int, genome_annot: str, genome_annot_groups=[]):
         # Get the table of which genomes have these bins
         presence = (
             pg_display
@@ -872,7 +941,7 @@ def _(make_subplots, pd, pg_display):
         # Make a plot with two panels
         fig = make_subplots(
             shared_xaxes=True,
-            rows=2,
+            rows=2 + int(genome_annot != 'None'),
             cols=1,
             start_cell="bottom-left",
             # column_widths=[2, 1, 1],
@@ -886,33 +955,91 @@ def _(make_subplots, pd, pg_display):
             dict(
                 x=row_i,
                 y=bins.index(bin),
-                color="blue" if present else "red",
+                color="black" if present else "white",
                 bin=bin,
-                text=f"{bin} is {'Present' if present else 'Absent'}"
+                text=f"{bin} is {'Present' if present else 'Absent'}",
+                present=present
             )
             for row_i, row in presence.reindex(columns=bins).iterrows()
             for bin, present in row.items()
         ])
 
+        # Add the vertical lines
+        for x, x_df in points.query('present == 1').groupby("x"):
+            if x_df.shape[0] > 1:
+                fig.add_scatter(
+                    x=[x, x],
+                    y=[x_df['y'].min(), x_df['y'].max()],
+                    mode="lines",
+                    line=dict(
+                        color="grey"
+                    ),
+                    showlegend=False
+                )
+            
         fig.add_scatter(
             x=points["x"],
             y=points["y"],
             mode="markers",
             marker=dict(
-                color=points["color"]
+                color=points["color"],
+                size=10,
+                line=dict(
+                    width=1,
+                    color="black"
+                )
             ),
             text=points["text"],
             hovertemplate="%{text}<extra></extra>",
             showlegend=False
         )
+
         fig.add_bar(
             x=list(range(presence.shape[0])),
             y=presence[0],
             row=2,
             col=1,
             showlegend=False,
-            hovertemplate="%{y:,} Genomes<extra></extra>"
+            hovertemplate="%{y:,} Genomes<extra></extra>",
+            marker=dict(color="black")
         )
+        # Optionally add the annotation table
+        if genome_annot != 'None':
+            annot_df = (
+                pd.concat([
+                    pg_display
+                    .adata
+                    .to_df(layer="present")
+                    .reindex(columns=bins),
+                    pg_display
+                    .adata
+                    .obs
+                    .reindex(columns=[genome_annot])
+                ], axis=1)
+                .groupby(bins + [genome_annot])
+                .apply(len, include_groups=False)
+                .sort_values(ascending=False)
+                .reset_index()
+                .pivot_table(
+                    columns=bins,
+                    index=genome_annot,
+                    values=0
+                )
+                .reindex(
+                    columns=presence.set_index(bins).index
+                )
+                .fillna(0)
+            )
+            if len(genome_annot_groups) > 0:
+                annot_df = annot_df.reindex(index=genome_annot_groups)
+            fig.add_heatmap(
+                z=annot_df.values,
+                y=annot_df.index.values,
+                row=3,
+                col=1,
+                colorscale="blues",
+                hovertemplate="%{y}<br>%{z} Genomes<extra></extra>"
+            )
         fig.update_layout(
             template="simple_white",
             xaxis=dict(
@@ -926,17 +1053,27 @@ def _(make_subplots, pd, pg_display):
             ),
             yaxis2=dict(
                 title_text="Number of Genomes"
-            )
+            ),
+            height=height
         )
         return fig
-        
+
         return presence
     return (show_bin_overlap,)
 
 
 @app.cell
-def _(bin_overlap_args, show_bin_overlap):
-    show_bin_overlap(**bin_overlap_args.value)
+def _(
+    bin_overlap_args,
+    genome_annot_groups,
+    genome_annot_ui,
+    show_bin_overlap,
+):
+    show_bin_overlap(
+        genome_annot_groups=genome_annot_groups.value,
+        genome_annot=genome_annot_ui.value,
+        **bin_overlap_args.value
+    )
     return
 
 
