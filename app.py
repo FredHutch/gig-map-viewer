@@ -50,7 +50,7 @@ async def _(micropip, mo, running_in_wasm):
             await micropip.install("s3transfer==0.11.3")
             await micropip.install("boto3==1.36.23")
             await micropip.install("aiobotocore==2.20.0")
-            await micropip.install("cirro[pyodide]>=1.2.16")
+            await micropip.install("cirro[pyodide]==1.2.16")
 
         from io import StringIO, BytesIO
         from queue import Queue
