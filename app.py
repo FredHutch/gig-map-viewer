@@ -738,7 +738,7 @@ def _():
 
 
 @app.cell
-def _(mo, pangenome_dataset_ui):
+def _(mo, pangenome_dataset_ui, pg_display):
     heatmap_options_ui = mo.md("""
     ### Genome Heatmap Options
 
@@ -748,7 +748,7 @@ def _(mo, pangenome_dataset_ui):
             min_bin_size=mo.ui.number(
                 label="Minimum Bin Size (# of Genes):",
                 start=1,
-                value=100
+                value=int(pg_display.adata.var.head(40)["n_genes"].min())
             ),
             height=mo.ui.number(
                 label="Figure Height",
@@ -859,7 +859,7 @@ def _(mo, pg):
         bins=mo.ui.multiselect(
             label="Bins:",
             options=sorted(pg.adata.var_names, key=lambda bin_id: int(bin_id.split(" ")[-1])),
-            value=["Bin 1", "Bin 2"]
+            value=list(pg.adata.var.sort_values(by="n_genes", ascending=False).head(10).index.values)
         ),
         height=mo.ui.number(
             label="Figure Height:",
@@ -1031,6 +1031,10 @@ def _(make_subplots, pd, pg_display):
             )
             if len(genome_annot_groups) > 0:
                 annot_df = annot_df.reindex(index=genome_annot_groups)
+                annot_df = annot_df.dropna(
+                    axis=0,
+                    how="all"
+                )
             fig.add_heatmap(
                 z=annot_df.values,
                 y=annot_df.index.values,
