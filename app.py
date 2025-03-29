@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.11.2"
+__generated_with = "0.11.17"
 app = marimo.App(width="medium", app_title="Pangenome Viewer ")
 
 
@@ -56,54 +56,38 @@ async def _(micropip, mo, running_in_wasm):
         from queue import Queue
         from time import sleep
         from typing import Dict, Optional, List
-        import plotly.express as px
-        import plotly.graph_objects as go
-        from plotly.subplots import make_subplots
-        import pandas as pd
-        import numpy as np
         from functools import lru_cache
         import base64
         from urllib.parse import quote_plus
-        from scipy import cluster, spatial
-        from anndata import AnnData
         from copy import copy
 
         from cirro import DataPortalLogin, DataPortalDataset
         from cirro.services.file import FileService
         from cirro.sdk.file import DataPortalFile
         from cirro.config import list_tenants
-        from scipy import cluster
 
         # A patch to the Cirro client library is applied when running in WASM
         if running_in_wasm:
             from cirro.helpers import pyodide_patch_all
             pyodide_patch_all()
     return (
-        AnnData,
         BytesIO,
         DataPortalDataset,
         DataPortalFile,
         DataPortalLogin,
         Dict,
         FileService,
+        List,
         Optional,
         Queue,
         StringIO,
         base64,
-        cluster,
         copy,
-        go,
         list_tenants,
         lru_cache,
-        make_subplots,
-        np,
-        pd,
-        px,
         pyodide_patch_all,
         quote_plus,
         sleep,
-        spatial,
-        List
     )
 
 
@@ -136,12 +120,7 @@ def _(list_tenants):
 
     def name_to_domain(name):
         return tenants_by_name.get(name, {}).get("domain")
-    return (
-        domain_to_name,
-        name_to_domain,
-        tenants_by_domain,
-        tenants_by_name,
-    )
+    return domain_to_name, name_to_domain, tenants_by_domain, tenants_by_name
 
 
 @app.cell
@@ -289,6 +268,15 @@ def _(client, mo, pangenome_dataset_ui, project_ui):
         .get_dataset_by_id(pangenome_dataset_ui.value)
     )
     return (pangenome_dataset,)
+
+
+@app.cell
+def _(mo):
+    with mo.status.spinner("Loading dependencies"):
+        import pandas as pd
+        from scipy import cluster, spatial
+        from anndata import AnnData
+    return AnnData, cluster, pd, spatial
 
 
 @app.cell
@@ -445,6 +433,15 @@ def _(mo, pangenome_dataset_ui):
     mo.stop(pangenome_dataset_ui.value is None)
     pangenome_args
     return (pangenome_args,)
+
+
+@app.cell
+def _(mo):
+    with mo.status.spinner("Loading dependencies:"):
+        import plotly.express as px
+        from plotly.subplots import make_subplots
+        import numpy as np
+    return make_subplots, np, px
 
 
 @app.cell
