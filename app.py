@@ -6,7 +6,41 @@ app = marimo.App(width="medium", app_title="Pangenome Viewer ")
 
 @app.cell
 def _(mo):
-    mo.md(r"""# Pangenome Viewer (gig-map)""")
+    mo.sidebar(
+        [
+            mo.nav_menu(
+                {
+                    "#pangenome-viewer-gig-map": f"{mo.icon('lucide:info')} About",
+                    "#connect-to-database": f"{mo.icon('lucide:database')} Connect",
+                    "#inspect-pangenome": f"{mo.icon('lucide:map')} Inspect Pangenome",
+                    "#compare-pangenomes": f"{mo.icon('lucide:map-plus')} Compare Pangenomes",
+                    "#inspect-gene-bin": f"{mo.icon('lucide:box')} Inspect Gene Bin",
+                    "#compare-gene-bins": f"{mo.icon('lucide:boxes')} Compare Gene Bins",
+                    "#analyze-metagenomes": f"{mo.icon('lucide:test-tubes')} Analyze Metagenomes"
+                },
+                orientation="vertical",
+            ),
+        ]
+    )
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(
+        r"""
+        # Pangenome Viewer (gig-map)
+
+        The [gig-map (for "genes-in-genomes map")](https://github.com/FredHutch/gig-map/wiki) tool
+        is used to analyze collections of genomes ("pan-genomes") according to which genes are shared
+        among different groups of genomes.
+        Genes are organized into **bins** -- groups of genes which are all generally found in the same genomes.
+
+        Each bin represents a group of genes which is either (a) preserved together within a lineage, or (b)
+        consistently transferred together between lineages.
+        Biologically, these tend to be species/genus core genomes, operons, genomic islands, plasmids, bacteriophages, etc.
+        """
+    )
     return
 
 
@@ -125,7 +159,7 @@ def _(list_tenants):
 
 @app.cell
 def _(mo):
-    mo.md(r"""## Load Data""")
+    mo.md(r"""## Connect to Database""")
     return
 
 
@@ -244,6 +278,12 @@ def _(client, filter_datasets_pangenome, mo, project_ui):
 
 
 @app.cell
+def _():
+    ## Inspect Pangenome
+    return
+
+
+@app.cell
 def _(id_to_name, mo, name_to_id, pangenome_datasets, query_params):
     # Let the user select which pangenome dataset to get data from
     pangenome_dataset_ui = mo.ui.dropdown(
@@ -268,6 +308,30 @@ def _(client, mo, pangenome_dataset_ui, project_ui):
         .get_dataset_by_id(pangenome_dataset_ui.value)
     )
     return (pangenome_dataset,)
+
+
+@app.cell
+def _(mo, pangenome_dataset):
+    mo.md("""
+    ### Analysis Settings
+
+    **Gene Clustering**:
+
+      - Maximum Sequence Similarity: {gene_catalog_cluster_similarity}%
+      - Sequence Overlap: {gene_catalog_cluster_similarity}%
+      - Minimum Gene Length: {gene_catalog_min_gene_length:,}aa
+
+    """.format(
+        **{
+            f"{group}_{kw}": (
+                int(val * 100) if kw in ["cluster_similarity", "cluster_coverage"]
+                else val
+            )
+            for group, group_attrs in pangenome_dataset.params.additional_properties.items()
+            for kw, val in group_attrs.items()
+        }
+    ))
+    return
 
 
 @app.cell
@@ -406,11 +470,23 @@ def _(
 
 
 @app.cell
-def _(mo, pangenome_dataset_ui):
+def _(mo, pg):
+    mo.md(f"""
+    - Number of Genomes: {pg.adata.n_obs:,}
+    - Number of Genes: {pg.adata.var["n_genes"].sum():,}
+    - Number of Gene Bins: {pg.adata.n_vars:,}
+    """)
+    return
+
+
+@app.cell
+def _(mo, pangenome_dataset_ui, pg):
     # The user can apply filters for visualizing the pangenome
     pangenome_args = (
         mo.md("""
     ### Pangenome Options
+
+    Filter out any genes which are binned 
 
     - {min_prop}
     - {min_genome_size}
@@ -425,7 +501,7 @@ def _(mo, pangenome_dataset_ui):
             min_genome_size=mo.ui.number(
                 label="Minimum Genome Size (# of Genes):",
                 start=1,
-                value=800
+                value=int(pg.adata.obs["n_genes"].median() * 0.75)
             )
         )
     )
@@ -726,18 +802,6 @@ def _(
 
 
 @app.cell
-def _():
-    # pg_display.adata.var
-    return
-
-
-@app.cell
-def _():
-    # pg_display.adata.obs
-    return
-
-
-@app.cell
 def _(mo, pangenome_dataset_ui, pg_display):
     heatmap_options_ui = mo.md("""
     ### Genome Heatmap Options
@@ -775,13 +839,17 @@ def _(pg_display):
 
 
 @app.cell
+def _(mo):
+    mo.md(r"""## Inspect Gene Bin""")
+    return
+
+
+@app.cell
 def _(mo, pg, pg_display):
     # Show the user information about a specific bin
     display_bin_args = (
         mo.md(
             """
-    ### Show Bin Information
-
     {bin_id}
 
     {genome_columns}
@@ -846,11 +914,15 @@ def _(display_bin, display_bin_args):
 
 
 @app.cell
+def _(mo):
+    mo.md(r"""## Compare Gene Bins""")
+    return
+
+
+@app.cell
 def _(mo, pg):
     # Show the user overlap between bins
     bin_overlap_args = mo.md("""
-    ### Show Bin Overlap
-
     {bins}
 
     {height}
@@ -1077,6 +1149,11 @@ def _(
         genome_annot=genome_annot_ui.value,
         **bin_overlap_args.value
     )
+    return
+
+
+@app.cell
+def _():
     return
 
 
