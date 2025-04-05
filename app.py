@@ -592,7 +592,7 @@ def _(mo):
     return make_subplots, np, px
 
 
-@app.cell(hide_code=True)
+@app.cell
 def _(
     DataPortalDataset,
     Pangenome,
@@ -628,13 +628,20 @@ def _(
             return mo.md("""
     ### Inspect Pangenome: Heatmap Options
 
-     - {min_bin_size}
+     - {top_n_bins}
+     - {include_bins}
      - {height}
             """).batch(
-                min_bin_size=mo.ui.number(
-                    label="Minimum Bin Size (# of Genes):",
-                    start=1,
-                    value=int(self.pg.adata.var.head(40)["n_genes"].min())
+                top_n_bins=mo.ui.number(
+                    label="Show N Bins (Largest # of Genes):",
+                    start=0,
+                    value=40,
+                    step=1
+                ),
+                include_bins=mo.ui.multiselect(
+                    label="Show Specific Bins:",
+                    value=[],
+                    options=self.pg.adata.var_names
                 ),
                 height=mo.ui.number(
                     label="Figure Height",
@@ -643,12 +650,25 @@ def _(
                 )
             )
 
-        def plot_heatmap(self, min_bin_size=1, height=800):
+        def plot_heatmap(self, top_n_bins: int, height: int, include_bins: list):
             """Make a heatmap showing which bins are present in which genomes."""
+
+            # First get the top bins selected based on bin size
+            if top_n_bins is not None and top_n_bins > 0:
+                bins_to_plot = list(self.pg.adata.var.head(top_n_bins).index.values)
+            else:
+                bins_to_plot = []
+
+            for bin in include_bins:
+                if bin not in bins_to_plot:
+                    bins_to_plot.append(bin)
+
+            if len(bins_to_plot) < 2:
+                return mo.md("""Please select multiple bins to plot""")
 
             present = (
                 self.pg.adata
-                [:, self.pg.adata.var["n_genes"] >= min_bin_size]
+                [:, bins_to_plot]
                 .to_df(layer="present")
             )
 
