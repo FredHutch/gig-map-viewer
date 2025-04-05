@@ -16,7 +16,8 @@ def _(mo):
                     "#compare-pangenomes": f"{mo.icon('lucide:map-plus')} Compare Pangenomes",
                     "#inspect-gene-bin": f"{mo.icon('lucide:box')} Inspect Gene Bin",
                     "#compare-gene-bins": f"{mo.icon('lucide:boxes')} Compare Gene Bins",
-                    "#analyze-metagenomes": f"{mo.icon('lucide:test-tubes')} Analyze Metagenomes"
+                    "#analyze-metagenomes": f"{mo.icon('lucide:test-tubes')} Analyze Metagenomes",
+                    "#settings": f"{mo.icon('lucide:settings')} Settings"
                 },
                 orientation="vertical",
             ),
@@ -278,8 +279,8 @@ def _(client, filter_datasets_pangenome, mo, project_ui):
 
 
 @app.cell
-def _():
-    ## Inspect Pangenome
+def _(mo):
+    mo.md(r"""## Inspect Pangenome""")
     return
 
 
@@ -288,9 +289,9 @@ def _(id_to_name, mo, name_to_id, pangenome_datasets, query_params):
     # Let the user select which pangenome dataset to get data from
     pangenome_dataset_ui = mo.ui.dropdown(
         label="Select Pangenome:",
-        value=id_to_name(pangenome_datasets, query_params.get("dataset")),
+        value=id_to_name(pangenome_datasets, query_params.get("inspect_pangenome")),
         options=name_to_id(pangenome_datasets),
-        on_change=lambda i: query_params.set("dataset", i)
+        on_change=lambda i: query_params.set("inspect_pangenome", i)
     )
     pangenome_dataset_ui
     return (pangenome_dataset_ui,)
@@ -312,25 +313,30 @@ def _(client, mo, pangenome_dataset_ui, project_ui):
 
 @app.cell
 def _(mo, pangenome_dataset):
-    mo.md("""
-    ### Analysis Settings
+    mo.accordion({
+        "Analysis Settings": mo.md("""
+    | Analysis Settings | |
+    | --- | --- |
+    | Gene Clustering Similarity | {gene_catalog_cluster_similarity}% |
+    | Gene Clustering Overlap | {gene_catalog_cluster_similarity}% |
+    | Minimum Gene Length | {gene_catalog_min_gene_length:,}aa |
+    | Alignment Minimum Coverage | {alignment_min_coverage}% |
+    | Alignment Minimum Identity | {alignment_min_identity}% |
+    | Gene Binning Threshold | {clustering_max_dist_genes}% |
+    | Minimum Gene Bin Size | {clustering_min_bin_size} |
+    | Minimum Genomes Per Gene | {clustering_min_genomes_per_gene} |
 
-    **Gene Clustering**:
-
-      - Maximum Sequence Similarity: {gene_catalog_cluster_similarity}%
-      - Sequence Overlap: {gene_catalog_cluster_similarity}%
-      - Minimum Gene Length: {gene_catalog_min_gene_length:,}aa
-
-    """.format(
-        **{
-            f"{group}_{kw}": (
-                int(val * 100) if kw in ["cluster_similarity", "cluster_coverage"]
-                else val
-            )
-            for group, group_attrs in pangenome_dataset.params.additional_properties.items()
-            for kw, val in group_attrs.items()
-        }
-    ))
+        """.format(
+            **{
+                f"{group}_{kw}": (
+                    int(val * 100) if kw in ["cluster_similarity", "cluster_coverage", "max_dist_genes"]
+                    else val
+                )
+                for group, group_attrs in pangenome_dataset.params.additional_properties.items()
+                for kw, val in group_attrs.items()
+            }
+        ))
+    })
     return
 
 
@@ -340,7 +346,8 @@ def _(mo):
         import pandas as pd
         from scipy import cluster, spatial
         from anndata import AnnData
-    return AnnData, cluster, pd, spatial
+        import sklearn
+    return AnnData, cluster, pd, sklearn, spatial
 
 
 @app.cell
@@ -350,9 +357,11 @@ def _(
     Dict,
     List,
     cluster,
+    lru_cache,
     mo,
-    pangenome_dataset,
+    np,
     pd,
+    query_params,
     spatial,
 ):
     # Define an object with all of the information for a pangenome
@@ -373,18 +382,53 @@ def _(
         tree_df: pd.DataFrame
         clades: List[set]
 
-        def __init__(self, ds: DataPortalDataset):
+        def __init__(self, ds: DataPortalDataset, min_prop: float):
             self.ds = ds
 
             # Read in the table of which genes are in which bins
             # and turn into a dict keyed by bin ID
             self.bin_contents = {
                 bin: d.drop(columns=['bin'])
-                for bin, d in self.read_csv("data/bin_pangenome/gene_bins.csv").groupby("bin")
+                for bin, d in self.read_csv(
+                    "data/bin_pangenome/gene_bins.csv",
+                    low_memory=False
+                ).groupby("bin")
             }
 
             # Build an AnnData object
             self.adata = self._make_adata()
+
+            # Make a binary mask layer indicating whether each genome meets the min_prop threshold
+            self.adata.layers["present"] = (self.adata.to_df() >= min_prop).astype(int)
+
+            # Calculate the number of genes detected per genome
+            # (counting each entire bin that was detected per genome)
+            self.adata.obs["n_genes"] = pd.Series({
+                genome: self.adata.var.loc[genome_contains_bin, "n_genes"].sum()
+                for genome, genome_contains_bin in (self.adata.to_df(layer="present") == 1).iterrows()
+            })
+
+            # Filter out the genomes which are below the threshold
+            _n_genomes_filter_threshold = (
+                self.adata.obs['n_genes'].median()
+                *
+                float(query_params.get("min_genes_rel_median", '0.5'))
+            )
+            _n_genomes_filter = (self.adata.obs['n_genes'] >= _n_genomes_filter_threshold)
+            self.n_genomes_filtered_out = self.adata.shape[0] - _n_genomes_filter.sum()
+            self.adata = self.adata[_n_genomes_filter]
+
+            # Filter the dataset to only include genomes which include a gene
+            self.adata = self.adata[self.adata.obs["n_genes"] > 0]
+
+            # Compute the number of genomes that each bin is found in
+            self.adata.var["n_genomes"] = self.adata.to_df(layer="present").sum()
+
+            # Filter out any bins which are found in 0 genomes
+            self.adata = self.adata[:, self.adata.var["n_genomes"] > 0]
+
+            # Compute the proportion of genomes that each bin is found in
+            self.adata.var["prevalence"] = self.adata.var["n_genomes"] / self.adata.shape[0]
 
             # Run linkage clustering on the genomes
             self._genome_tree, self._genome_tree_nodes = cluster.hierarchy.to_tree(
@@ -400,174 +444,6 @@ def _(
             # Get all of the possible monophyletic groupings of genomes, based on that binary tree
             self.index_tree()
 
-        def index_tree(self):
-            """Get all of the possible monophyletic groupings of genomes, based on that binary tree."""
-
-            self.clades = [
-                set([
-                    self.adata.obs_names[ix]
-                    for ix in cn.pre_order(lambda n: n.id)
-                    if ix < self.adata.obs.shape[0]
-                ])
-                for cn in self._genome_tree_nodes
-                if cn.get_count() > 1
-            ]
-
-        def _make_adata(self) -> AnnData:
-
-            # The variable annotations includes the number of genes for each variable
-            var = pd.DataFrame(dict(
-                n_genes=pd.Series({bin: d.shape[0] for bin, d in self.bin_contents.items()})
-            ))
-
-            # Read in the table listing which genomes contain which bins
-            _genome_contents = self.read_csv("data/bin_pangenome/genome_content.long.csv")
-
-            # Split off the genome annotation information into a separate table
-            obs = (
-                _genome_contents
-                .drop(columns=["bin", "n_genes_detected", "prop_genes_detected"])
-                .drop_duplicates()
-                .set_index("genome")
-            )
-
-            # X will be the proportion of genes detected
-            X = (
-                _genome_contents
-                .pivot(
-                    index="genome",
-                    columns="bin",
-                    values="prop_genes_detected"
-                )
-                .fillna(0)
-            )
-
-            # Read in the ANI distance matrix for all genomes
-            _genome_ani = self.read_csv(
-                "data/distances.csv.gz",
-                index_col=0
-            )
-
-            # Build an AnnData object
-            return AnnData(
-                X=X,
-                obs=obs.reindex(index=X.index),
-                var=var.reindex(index=X.columns),
-                obsp=dict(
-                    ani_distance=_genome_ani.reindex(
-                        columns=X.index,
-                        index=X.index
-                    )
-                )
-            )
-
-        def read_csv(self, fp: str, **kwargs):
-            return self.ds.list_files().get_by_id(fp).read_csv(**kwargs)
-
-    with mo.status.spinner("Loading data..."):
-        pg = Pangenome(pangenome_dataset)
-    return Pangenome, pg
-
-
-@app.cell
-def _(mo, pg):
-    mo.md(f"""
-    - Number of Genomes: {pg.adata.n_obs:,}
-    - Number of Genes: {pg.adata.var["n_genes"].sum():,}
-    - Number of Gene Bins: {pg.adata.n_vars:,}
-    """)
-    return
-
-
-@app.cell
-def _(mo, pangenome_dataset_ui, pg):
-    # The user can apply filters for visualizing the pangenome
-    pangenome_args = (
-        mo.md("""
-    ### Pangenome Options
-
-    Filter out any genes which are binned 
-
-    - {min_prop}
-    - {min_genome_size}
-        """)
-        .batch(
-            min_prop=mo.ui.number(
-                label="Minimum Proportion of Genes in Bin:",
-                start=0.01,
-                stop=1.0,
-                value=0.9
-            ),
-            min_genome_size=mo.ui.number(
-                label="Minimum Genome Size (# of Genes):",
-                start=1,
-                value=int(pg.adata.obs["n_genes"].median() * 0.75)
-            )
-        )
-    )
-    # Stop if the user has not selected a dataset
-    mo.stop(pangenome_dataset_ui.value is None)
-    pangenome_args
-    return (pangenome_args,)
-
-
-@app.cell
-def _(mo):
-    with mo.status.spinner("Loading dependencies:"):
-        import plotly.express as px
-        from plotly.subplots import make_subplots
-        import numpy as np
-    return make_subplots, np, px
-
-
-@app.cell
-def _(
-    AnnData,
-    Pangenome,
-    cluster,
-    copy,
-    make_subplots,
-    mo,
-    np,
-    pangenome_args,
-    pd,
-    pg,
-    px,
-):
-    # Based on the inputs, format and present a display
-    class PangenomeDisplay:
-        pg: Pangenome
-        # Filtered and annotated copy of the pg.adata
-        adata: AnnData
-
-        def __init__(self, pg: Pangenome, min_prop: float, min_genome_size: int):
-            self.pg = pg
-
-            # Copy the AnnData object
-            self.adata = copy(pg.adata)
-
-            # Make a binary mask layer indicating whether each genome meets the min_prop threshold
-            self.adata.layers["present"] = (self.adata.to_df() >= min_prop).astype(int)
-
-            # Calculate the number of genes detected per genome
-            # (counting each entire bin that was detected per genome)
-            self.adata.obs["n_genes"] = pd.Series({
-                genome: self.adata.var.loc[genome_contains_bin, "n_genes"].sum()
-                for genome, genome_contains_bin in (self.adata.to_df(layer="present") == 1).iterrows()
-            })
-
-            # Filter the genomes based on the size filter
-            self.adata = self.adata[self.adata.obs["n_genes"] >= min_genome_size, :]
-
-            # Compute the number of genomes that each bin is found in
-            self.adata.var["n_genomes"] = self.adata.to_df(layer="present").sum()
-
-            # Filter out any bins which are found in 0 genomes
-            self.adata = self.adata[:, self.adata.var["n_genomes"] > 0]
-
-            # Compute the proportion of genomes that each bin is found in
-            self.adata.var["prevalence"] = self.adata.var["n_genomes"] / self.adata.shape[0]
-
             # Compute the monophyly score for each bin, and then summarize across each genome
             self.compute_monophyly()
 
@@ -579,9 +455,9 @@ def _(
             """
 
             # Update the clades to only include what is present in the filtered dataset
-            self.pg.clades = [
+            self.clades = [
                 clade & set(self.adata.obs_names.values)
-                for clade in self.pg.clades
+                for clade in self.clades
             ]
 
             # Annotate each bin by its monophyly score
@@ -624,22 +500,155 @@ def _(
             else:
                 smallest_clade = np.min([
                     len(clade)
-                    for clade in self.pg.clades
+                    for clade in self.clades
                     if genomes <= clade and len(clade) > 0
                 ])
                 # assert len(genomes) < 3, (genomes, smallest_clade)
                 # Return the proportion of genomes in that clade which contain the bin
                 return len(genomes) / smallest_clade
 
-        # def plot_bins_scatter(self):
-        #     """Make a scatter plot with bin information."""
+        def index_tree(self):
+            """Get all of the possible monophyletic groupings of genomes, based on that binary tree."""
+
+            self.clades = [
+                set([
+                    self.adata.obs_names[ix]
+                    for ix in cn.pre_order(lambda n: n.id)
+                    if ix < self.adata.obs.shape[0]
+                ])
+                for cn in self._genome_tree_nodes
+                if cn.get_count() > 1
+            ]
+
+        def _make_adata(self) -> AnnData:
+
+            # The variable annotations includes the number of genes for each variable
+            var = pd.DataFrame(dict(
+                n_genes=pd.Series({bin: d.shape[0] for bin, d in self.bin_contents.items()})
+            ))
+
+            # Read in the table listing which genomes contain which bins
+            _genome_contents = self.read_csv(
+                "data/bin_pangenome/genome_content.long.csv",
+                low_memory=False
+            )
+
+            # Split off the genome annotation information into a separate table
+            obs = (
+                _genome_contents
+                .drop(columns=["bin", "n_genes_detected", "prop_genes_detected"])
+                .drop_duplicates()
+                .set_index("genome")
+            )
+
+            # X will be the proportion of genes detected
+            X = (
+                _genome_contents
+                .pivot(
+                    index="genome",
+                    columns="bin",
+                    values="prop_genes_detected"
+                )
+                .fillna(0)
+            )
+
+            # Read in the ANI distance matrix for all genomes
+            _genome_ani = self.read_csv(
+                "data/distances.csv.gz",
+                index_col=0
+            )
+
+            # Build an AnnData object
+            return AnnData(
+                X=X,
+                obs=obs.reindex(index=X.index),
+                var=var.reindex(index=X.columns),
+                obsp=dict(
+                    ani_distance=_genome_ani.reindex(
+                        columns=X.index,
+                        index=X.index
+                    )
+                )
+            )
+
+        def read_csv(self, fp: str, **kwargs):
+            return self.ds.list_files().get_by_id(fp).read_csv(**kwargs)
+
+
+    # Cache the creation of pangenome objects
+    @lru_cache
+    def make_pangenome(ds: DataPortalDataset, min_prop: float):
+        with mo.status.spinner("Loading data..."):
+            return Pangenome(ds, min_prop)
+    return Pangenome, make_pangenome
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    with mo.status.spinner("Loading dependencies:"):
+        import plotly.express as px
+        from plotly.subplots import make_subplots
+        import numpy as np
+    return make_subplots, np, px
+
+
+@app.cell(hide_code=True)
+def _(
+    DataPortalDataset,
+    Pangenome,
+    cluster,
+    make_pangenome,
+    make_subplots,
+    mo,
+    np,
+    pd,
+    px,
+    query_params,
+    sklearn,
+):
+    # Object used to configure and display the "Inspect Pangenome" section
+    class InspectPangenome:
+        pg: Pangenome
+
+        def __init__(self, ds: DataPortalDataset):
+            self.pg = make_pangenome(ds, float(query_params.get("min_prop", 0.5)))
+
+            # Precompute the coordinates for the genomes
+            # Ordinate using the log-transformed gene abundances, to not overrepresent large bins
+            log_genes_per_genome = self.pg.adata.to_df(layer="present") * self.pg.adata.var["n_genes"].apply(np.log10)
+            self.genome_coords = sklearn.manifold.Isomap().fit_transform(log_genes_per_genome)
+
+            # Make a table with the number of genes from each bin which are found in each genome
+            self.n_genes_per_genome = self.pg.adata.to_df(layer="present") * self.pg.adata.var["n_genes"]
+    
+            # Calculate the proportion of each genome made up by each bin
+            self.prop_genes_per_genome = self.n_genes_per_genome.apply(lambda r: r / r.sum(), axis=1)
+
+        def plot_heatmap_args(self):
+            return mo.md("""
+    ### Inspect Pangenome: Heatmap Options
+
+     - {min_bin_size}
+     - {height}
+            """).batch(
+                min_bin_size=mo.ui.number(
+                    label="Minimum Bin Size (# of Genes):",
+                    start=1,
+                    value=int(self.pg.adata.var.head(40)["n_genes"].min())
+                ),
+                height=mo.ui.number(
+                    label="Figure Height",
+                    start=100,
+                    value=800
+                )
+            )
 
         def plot_heatmap(self, min_bin_size=1, height=800):
             """Make a heatmap showing which bins are present in which genomes."""
 
             present = (
-                self.adata
-                [:, self.adata.var["n_genes"] >= min_bin_size]
+                self.pg.adata
+                [:, self.pg.adata.var["n_genes"] >= min_bin_size]
                 .to_df(layer="present")
             )
 
@@ -675,63 +684,63 @@ def _(
                 showscale=False,
             )
             fig.add_bar(
-                y=self.adata.var["n_genes"].reindex(bin_order),
+                y=self.pg.adata.var["n_genes"].reindex(bin_order),
                 x=bin_order,
                 row=2,
                 col=1,
                 showlegend=False,
                 text=[
-                    f"{bin_id}<br>{self.adata.var.loc[bin_id, 'n_genes']:,} Genes"
+                    f"{bin_id}<br>{self.pg.adata.var.loc[bin_id, 'n_genes']:,} Genes"
                     for bin_id in bin_order
                 ],
                 hovertemplate="%{text}<extra></extra>"
             )
             fig.add_bar(
-                x=self.adata.obs["n_genes"].reindex(genome_order),
+                x=self.pg.adata.obs["n_genes"].reindex(genome_order),
                 y=genome_order,
                 orientation='h',
                 row=1,
                 col=2,
                 showlegend=False,
                 text=[
-                    f"{genome_id}<br>{self.adata.obs.loc[genome_id, 'n_genes']:,} Genes"
+                    f"{genome_id}<br>{self.pg.adata.obs.loc[genome_id, 'n_genes']:,} Genes"
                     for genome_id in genome_order
                 ],
                 hovertemplate="%{text}<extra></extra>"
             )
             fig.add_bar(
-                x=self.adata.obs["monophyly"].reindex(genome_order),
+                x=self.pg.adata.obs["monophyly"].reindex(genome_order),
                 y=genome_order,
                 orientation='h',
                 row=1,
                 col=3,
                 showlegend=False,
                 text=[
-                    f"{genome_id}<br>{self.adata.obs.loc[genome_id, 'monophyly']:,} Monophyly Score"
+                    f"{genome_id}<br>{self.pg.adata.obs.loc[genome_id, 'monophyly']:,} Monophyly Score"
                     for genome_id in genome_order
                 ],
                 hovertemplate="%{text}<extra></extra>"
             )
             fig.add_bar(
-                y=self.adata.var["monophyly"].reindex(bin_order),
+                y=self.pg.adata.var["monophyly"].reindex(bin_order),
                 x=bin_order,
                 row=3,
                 col=1,
                 showlegend=False,
                 text=[
-                    f"{bin_id}<br>{self.adata.var.loc[bin_id, 'monophyly']:,} Monophyly Score"
+                    f"{bin_id}<br>{self.pg.adata.var.loc[bin_id, 'monophyly']:,} Monophyly Score"
                     for bin_id in bin_order
                 ],
                 hovertemplate="%{text}<extra></extra>"
             )
             fig.add_bar(
-                y=self.adata.var["prevalence"].reindex(bin_order),
+                y=self.pg.adata.var["prevalence"].reindex(bin_order),
                 x=bin_order,
                 row=4,
                 col=1,
                 showlegend=False,
                 text=[
-                    f"{bin_id}<br>{self.adata.var.loc[bin_id, 'prevalence']:,} Prevalence"
+                    f"{bin_id}<br>{self.pg.adata.var.loc[bin_id, 'prevalence']:,} Prevalence"
                     for bin_id in bin_order
                 ],
                 hovertemplate="%{text}<extra></extra>"
@@ -761,28 +770,181 @@ def _(
             )
             return fig
 
-        def plot_scatter(self):
-            """Show summary metrics on bins and genomes."""
+        def summary_metrics(self):
+            return mo.accordion({
+                "Pangenome Characteristics": mo.md(f"""
+                | Pangenome Characteristics | |
+                | --- | --- |
+                | Number of Genomes | {self.pg.adata.n_obs:,} |
+                | Number of Genes | {self.pg.adata.var["n_genes"].sum():,} |
+                | Number of Gene Bins | {self.pg.adata.n_vars:,} |
+                | Genome Size (max) | {self.pg.adata.obs["n_genes"].max()} |
+                | Genome Size (75%) | {int(self.pg.adata.obs["n_genes"].quantile(0.75))} |
+                | Genome Size (50%) | {int(self.pg.adata.obs["n_genes"].quantile(0.5))} |
+                | Genome Size (25%) | {int(self.pg.adata.obs["n_genes"].quantile(0.25))} |
+                | Genome Size (min) | {self.pg.adata.obs["n_genes"].min()} |
+                | Genomes Omitted: Low # of Genes | {self.pg.n_genomes_filtered_out:,} |
+                """)
+            })
 
-            fig = px.scatter(
-                self.adata.var.assign(log_n_genes=self.adata.var['n_genes'].apply(np.log10)).reset_index(),
-                hover_name="bin",
-                x="prevalence",
-                color="monophyly",
-                y="n_genes",
-                size="log_n_genes",
-                template="simple_white",
-                color_continuous_scale="bluered",
-                log_x=True,
-                log_y=True,
-                labels=dict(
-                    n_genes="Bin Size (# of Genes)",
-                    log_n_genes="Log Bin Size (log10 - # of Genes)",
-                    prevalence="Bin Prevalence (Proportion of Genomes)",
-                    monophyly="Monophyly Score"
+        def plot_scatter_args(self):
+            return mo.md("""
+    ### Inspect Pangenome: Genome Map
+
+    - Show N Bins: {n_bins}
+    - Annotate Genomes By: {annotate_by}
+    - Annotation Offset (x): {label_offset_x}
+    - Annotation Offset (y): {label_offset_y}
+    - Omit Genomes: {omit_genomes}
+    - Include Specific Bins: {include_bins}
+    - {height}
+            """).batch(
+                annotate_by=mo.ui.dropdown(
+                    options=self.pg.adata.obs.reset_index().columns.values,
+                    value=query_params.get("inspect_genomes_annotate_by", self.pg.adata.obs.index.name),
+                    on_change=lambda val: query_params.set("inspect_genomes_annotate_by", val)
+                ),
+                label_offset_x=mo.ui.number(value=0.),
+                label_offset_y=mo.ui.number(value=0.5),
+                n_bins=mo.ui.number(
+                    start=0,
+                    stop=100,
+                    step=1,
+                    value=10
+                ),
+                omit_genomes=mo.ui.multiselect(
+                    options=self.pg.adata.obs_names,
+                    value=[]
+                ),
+                include_bins=mo.ui.multiselect(
+                    options=self.pg.adata.var_names,
+                    value=[]
+                ),
+                height=mo.ui.number(
+                    label="Figure Height",
+                    start=100,
+                    value=600
                 )
             )
-            return fig
+
+        def plot_scatter(
+            self,
+            annotate_by: str,
+            n_bins: int,
+            omit_genomes: list,
+            include_bins: list,
+            height: int,
+            label_offset_x: float,
+            label_offset_y: float
+        ):
+            """
+            Show a scatter plot where each point is a genome.
+            The layout is driven by the similarity of which genes are encoded in the genome.
+            Annotations can be made according to the presence of different bins, genome size, etc.
+            """
+            if n_bins == 0 and len(include_bins) == 0:
+                return mo.md("Select bins to display")
+
+            with mo.status.spinner("Generating Plot:"):
+        
+                # Choose the bins to plot based on the mean proportion across genomes
+                bins_to_plot = list(self.prop_genes_per_genome.mean().sort_values().tail(n_bins).index.values)
+
+                # Add any specific bins selected by the user
+                for _bin in include_bins:
+                    if _bin not in bins_to_plot:
+                        bins_to_plot.append(_bin)
+        
+                # Drop all of the unselected bins, and add an "Other" column
+                n_genes_per_genome = pd.concat([
+                    self.n_genes_per_genome.reindex(columns=bins_to_plot),
+                    pd.DataFrame(dict(Other=self.n_genes_per_genome.drop(columns=bins_to_plot).sum(axis=1)))
+                ], axis=1)
+        
+                # Make a label for each genome
+                genome_label = {
+                    genome: "<br>".join([
+                        f"{bin}:&#9;{n_genes:,} genes"
+                        for bin, n_genes
+                        in genome_count.sort_values(ascending=False).items()
+                        if n_genes > 0
+                    ])
+                    for genome, genome_count in n_genes_per_genome.iterrows()
+                }
+        
+                # Make a table to use only for point size
+                # For each genome, take the cumulative sum from smallest to largest
+                point_size_per_genome = (
+                    n_genes_per_genome
+                    .apply(lambda r: (r > 0).apply(int), axis=1)
+                    .apply(lambda r: r.iloc[::-1].cumsum(), axis=1)
+                    .apply(lambda r: r / r.max(), axis=1)
+                )
+        
+                # Make a table to plot which includes the proportion for every single bin
+                plot_df = pd.DataFrame([
+                    dict(
+                        genome=genome,
+                        x=genome_coord[0],
+                        y=genome_coord[1],
+                        bin=bin,
+                        genes_in_bin=n_genes_per_genome.loc[genome, bin],
+                        point_size=point_size_per_genome.loc[genome, bin],
+                        text=genome_label[genome]
+                    )
+                    for genome, genome_coord in zip(self.pg.adata.obs_names, self.genome_coords)
+                    for bin in point_size_per_genome.columns.values
+                    if n_genes_per_genome.loc[genome, bin] > 0 and genome not in omit_genomes
+                ]).sort_values(by="point_size", ascending=False)
+        
+                # Add the genome metadata
+                plot_df = plot_df.merge(
+                    self.pg.adata.obs,
+                    right_index=True,
+                    left_on="genome"
+                )
+        
+                fig = px.scatter(
+                    plot_df,
+                    x="x",
+                    y="y",
+                    custom_data=[annotate_by, "text"],
+                    hover_data=["genes_in_bin"],
+                    size="point_size",
+                    color="bin",
+                    hover_name=annotate_by,
+                    template="simple_white",
+                    opacity=1,
+                    labels=dict(bin="Gene Bin")
+                )
+                fig.add_scatter(
+                    x=self.genome_coords[:, 0] + label_offset_x,
+                    y=self.genome_coords[:, 1] + label_offset_y,
+                    text=[
+                        (
+                            genome if annotate_by == "genome"
+                            else
+                            self.pg.adata.obs.loc[genome, annotate_by]
+                        )
+                        for genome in self.pg.adata.obs_names
+                    ],
+                    mode="text",
+                    legendgroup="Annotation",
+                    legendgrouptitle=dict(text="Annotation"),
+                    name=annotate_by
+                )
+        
+                fig.update_traces(
+                    hovertemplate="<b>%{customdata[0]}</b><br><br>%{customdata[1]}<extra></extra>",
+                    marker=dict(line=dict(width=0))
+                )
+                fig.update_layout(
+                    xaxis=dict(visible=False),
+                    yaxis=dict(visible=False),
+                    height=height
+                )
+                return fig
+
 
 
     def sort_axis(df: pd.DataFrame):
@@ -795,46 +957,217 @@ def _(
                 )
             )
         ]
-
-    with mo.status.spinner("Computing layout..."):
-        pg_display = PangenomeDisplay(pg, **pangenome_args.value)
-    return PangenomeDisplay, pg_display, sort_axis
+    return InspectPangenome, sort_axis
 
 
 @app.cell
-def _(mo, pangenome_dataset_ui, pg_display):
-    heatmap_options_ui = mo.md("""
-    ### Genome Heatmap Options
-
-     - {min_bin_size}
-     - {height}
-    """).batch(
-            min_bin_size=mo.ui.number(
-                label="Minimum Bin Size (# of Genes):",
-                start=1,
-                value=int(pg_display.adata.var.head(40)["n_genes"].min())
-            ),
-            height=mo.ui.number(
-                label="Figure Height",
-                start=100,
-                value=800
-            )
-    )
-    # Stop if the user has not selected a dataset
-    mo.stop(pangenome_dataset_ui.value is None)
-    heatmap_options_ui
-    return (heatmap_options_ui,)
+def _(InspectPangenome, pangenome_dataset):
+    # Initialize the object using the dataset selected by the user
+    inspect_pangenome = InspectPangenome(pangenome_dataset)
+    return (inspect_pangenome,)
 
 
 @app.cell
-def _(heatmap_options_ui, pg_display):
-    pg_display.plot_heatmap(**heatmap_options_ui.value)
+def _(inspect_pangenome):
+    inspect_pangenome.summary_metrics()
     return
 
 
 @app.cell
-def _(pg_display):
-    pg_display.plot_scatter()
+def _(inspect_pangenome):
+    inspect_pangenome_heatmap_args = inspect_pangenome.plot_heatmap_args()
+    inspect_pangenome_heatmap_args
+    return (inspect_pangenome_heatmap_args,)
+
+
+@app.cell
+def _(inspect_pangenome, inspect_pangenome_heatmap_args):
+    inspect_pangenome.plot_heatmap(**inspect_pangenome_heatmap_args.value)
+    return
+
+
+@app.cell
+def _(inspect_pangenome):
+    inspect_pangenome_plot_scatter_args = inspect_pangenome.plot_scatter_args()
+    inspect_pangenome_plot_scatter_args
+    return (inspect_pangenome_plot_scatter_args,)
+
+
+@app.cell
+def _(inspect_pangenome, inspect_pangenome_plot_scatter_args):
+    inspect_pangenome.plot_scatter(**inspect_pangenome_plot_scatter_args.value)
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""## Compare Pangenomes""")
+    return
+
+
+@app.cell
+def _(id_to_name, mo, name_to_id, pangenome_datasets, query_params):
+    # Let the user select which pangenome datasets to compare
+    compare_pangenomes_dataset_ui = mo.ui.multiselect(
+        label="Select Pangenomes to Compare:",
+        value=[
+            id_to_name(pangenome_datasets, ds_id)
+            for ds_id in query_params.get("compare_pangenomes_datasets", "").split(",")
+            if len(ds_id) > 0
+        ],
+        options=name_to_id(pangenome_datasets),
+        on_change=lambda i: query_params.set("compare_pangenomes_datasets", ",".join(i))
+    )
+    compare_pangenomes_dataset_ui
+    return (compare_pangenomes_dataset_ui,)
+
+
+@app.cell
+def _(
+    client,
+    compare_pangenomes_dataset_ui,
+    id_to_name,
+    mo,
+    pangenome_datasets,
+    project_ui,
+):
+    # Stop if the user has not selected a dataset
+    mo.stop(compare_pangenomes_dataset_ui.value is None)
+
+    # Get the selected datasets
+    compare_pangenomes_datasets = [
+        (
+            client
+            .get_project_by_id(project_ui.value)
+            .get_dataset_by_id(ds_id)
+        )
+        for ds_id in compare_pangenomes_dataset_ui.value
+    ]
+
+    mo.md("""
+    Selected:
+
+    {selected}
+    """.format(
+        selected="\n".join([
+            "- " + id_to_name(pangenome_datasets, i)
+            for i in compare_pangenomes_dataset_ui.value
+        ])
+    ))
+    return (compare_pangenomes_datasets,)
+
+
+@app.cell
+def _(
+    DataPortalDataset,
+    List,
+    Pangenome,
+    make_pangenome,
+    mo,
+    pd,
+    px,
+    query_params,
+):
+    class ComparePangenomes:
+        pg_list: List[Pangenome]
+
+        def __init__(self, ds_list: List[DataPortalDataset]):
+            self.pg_list = [
+                make_pangenome(ds, float(query_params.get("min_prop", 0.5)))
+                for ds in ds_list
+            ]
+
+            # Combine the genome annotations across all pangneomes
+            self.genome_df = pd.concat([
+                (
+                    pg.adata
+                    .obs
+                    .reindex(columns=["n_genes", "monophyly"])
+                    .assign(
+                        pangenome=pg.ds.name
+                    )
+                )
+                for pg in self.pg_list
+            ])
+
+        def args(self, title: str):
+            return mo.md(
+                "### Compare Pangenomes: " + title + """
+
+     - Number of Bins: {nbins}
+     - Figure Height: {height}
+
+            """).batch(
+                nbins=mo.ui.number(
+                    start=2,
+                    stop=100,
+                    step=1,
+                    value=30
+                ),
+                height=mo.ui.number(
+                    start=100,
+                    stop=10000,
+                    step=10,
+                    value=600
+                )
+            )
+
+        def plot(self, nbins: int, height: int, y: str, ylabel: str, title: str):
+
+            fig = px.histogram(
+                self.genome_df,
+                y=y,
+                facet_col="pangenome",
+                labels={y: ylabel},
+                template="simple_white",
+                nbins=nbins,
+                height=height,
+                title=title
+            )
+            fig.update_xaxes(matches=None)
+            return fig
+    return (ComparePangenomes,)
+
+
+@app.cell
+def _(ComparePangenomes, compare_pangenomes_datasets):
+    compare_pangenomes = ComparePangenomes(compare_pangenomes_datasets)
+    return (compare_pangenomes,)
+
+
+@app.cell
+def _(compare_pangenomes):
+    compare_pangenomes_ngenes_args = compare_pangenomes.args("Genome Size")
+    compare_pangenomes_ngenes_args
+    return (compare_pangenomes_ngenes_args,)
+
+
+@app.cell
+def _(compare_pangenomes, compare_pangenomes_ngenes_args):
+    compare_pangenomes.plot(
+        y="n_genes",
+        ylabel="# of Genes per Genome",
+        title="Number of Genes per Genome",
+        **compare_pangenomes_ngenes_args.value
+    )
+    return
+
+
+@app.cell
+def _(compare_pangenomes):
+    compare_pangenomes_monophyly_args = compare_pangenomes.args("Monophyly")
+    compare_pangenomes_monophyly_args
+    return (compare_pangenomes_monophyly_args,)
+
+
+@app.cell
+def _(compare_pangenomes, compare_pangenomes_monophyly_args):
+    compare_pangenomes.plot(
+        y="monophyly",
+        ylabel="Monophyly",
+        title="Monophyly",
+        **compare_pangenomes_monophyly_args.value
+    )
     return
 
 
@@ -845,71 +1178,115 @@ def _(mo):
 
 
 @app.cell
-def _(mo, pg, pg_display):
-    # Show the user information about a specific bin
-    display_bin_args = (
-        mo.md(
-            """
-    {bin_id}
-
-    {genome_columns}
-            """
-        )
-        .batch(
-            bin_id=mo.ui.dropdown(
-                label="Display:",
-                options=sorted(pg.adata.var_names, key=lambda bin_id: int(bin_id.split(" ")[-1])),
-                value="Bin 1"
-            ),
-            genome_columns=mo.ui.multiselect(
-                label="Show Columns:",
-                options=pg_display.adata.obs.columns.values,
-                value=pg_display.adata.obs.columns.values
-            )
-        )
+def _(id_to_name, mo, name_to_id, pangenome_datasets, query_params):
+    # Let the user select which pangenome dataset to get data from
+    gene_bin_dataset_ui = mo.ui.dropdown(
+        label="Select Pangenome:",
+        value=id_to_name(pangenome_datasets, query_params.get("inspect_gene_bin_dataset")),
+        options=name_to_id(pangenome_datasets),
+        on_change=lambda i: query_params.set("inspect_gene_bin_dataset", i)
     )
+    gene_bin_dataset_ui
+    return (gene_bin_dataset_ui,)
+
+
+@app.cell
+def _(client, gene_bin_dataset_ui, mo, project_ui):
+    # Stop if the user has not selected a dataset
+    mo.stop(gene_bin_dataset_ui.value is None)
+
+    # Get the selected dataset
+    gene_bin_dataset = (
+        client
+        .get_project_by_id(project_ui.value)
+        .get_dataset_by_id(gene_bin_dataset_ui.value)
+    )
+    return (gene_bin_dataset,)
+
+
+@app.cell
+def _(DataPortalDataset, Pangenome, make_pangenome, mo, query_params):
+    class InspectGeneBin:
+        pg: Pangenome
+
+        def __init__(self, ds: DataPortalDataset):
+            self.pg = make_pangenome(ds, float(query_params.get("min_prop", 0.5)))
+
+        def display_bin_args(self):
+            return mo.md(
+                """
+        {bin_id}
+    
+        {genome_columns}
+                """
+            ).batch(
+                bin_id=mo.ui.dropdown(
+                    label="Display:",
+                    options=sorted(self.pg.adata.var_names, key=lambda bin_id: int(bin_id.split(" ")[-1])),
+                    value="Bin 1"
+                ),
+                genome_columns=mo.ui.multiselect(
+                    label="Show Columns:",
+                    options=self.pg.adata.obs.columns.values,
+                    value=self.pg.adata.obs.columns.values
+                )
+            )
+
+        def display_bin(self, bin_id, genome_columns):
+            # Show the list of genes in the bin
+            gene_df = (
+                self.pg.bin_contents[bin_id]
+                .set_index("gene_id")
+                .rename(
+                    columns=dict(
+                        combined_name="Gene Annotation",
+                        n_genomes="Number of Genomes"
+                    )
+                )
+            )
+    
+            # Show the list of genomes containing the bin
+            genome_df = (
+                self.pg.adata
+                [
+                    self.pg.adata
+                    .to_df(layer="present")
+                    [bin_id] == 1
+                ]
+                .obs
+            )
+    
+            return mo.vstack([
+                mo.md(bin_id),
+                mo.md(f"{gene_df.shape[0]:,} Genes / {genome_df.shape[0]:,} Genomes"),
+                gene_df,
+                genome_df.reindex(columns=genome_columns)
+            ])
+    return (InspectGeneBin,)
+
+
+@app.cell
+def _(InspectGeneBin, gene_bin_dataset):
+    inspect_gene_bin = InspectGeneBin(gene_bin_dataset)
+    return (inspect_gene_bin,)
+
+
+@app.cell
+def _(inspect_gene_bin):
+    # Show the user information about a specific bin
+    display_bin_args = inspect_gene_bin.display_bin_args()
     display_bin_args
     return (display_bin_args,)
 
 
 @app.cell
-def _(mo, pg, pg_display):
-    def display_bin(bin_id, genome_columns):
-        # Show the list of genes in the bin
-        gene_df = (
-            pg.bin_contents[bin_id]
-            .set_index("gene_id")
-            .rename(
-                columns=dict(
-                    combined_name="Gene Annotation",
-                    n_genomes="Number of Genomes"
-                )
-            )
-        )
-
-        # Show the list of genomes containing the bin
-        genome_df = (
-            pg_display.adata
-            [
-                pg_display.adata
-                .to_df(layer="present")
-                [bin_id] == 1
-            ]
-            .obs
-        )
-
-        return mo.vstack([
-            mo.md(bin_id),
-            mo.md(f"{gene_df.shape[0]:,} Genes / {genome_df.shape[0]:,} Genomes"),
-            gene_df,
-            genome_df.reindex(columns=genome_columns)
-        ])
-    return (display_bin,)
+def _():
+    return
 
 
 @app.cell
-def _(display_bin, display_bin_args):
-    display_bin(**display_bin_args.value)
+def _(display_bin_args, inspect_gene_bin):
+    inspect_gene_bin.display_bin(**display_bin_args.value)
     return
 
 
@@ -1153,7 +1530,53 @@ def _(
 
 
 @app.cell
-def _():
+def _(mo):
+    mo.md(r"""## Settings""")
+    return
+
+
+@app.cell
+def _(mo, query_params):
+    mo.md("""
+    ---
+
+    The gig-map analysis will identify every individual gene which is encoded by each genome
+    in the pan-genome collection.
+    To determine whether a particular genome contains a particular gene bin (which generally consist
+    of multiple genes), a minimum threshold is applied for the proportion of genes which must be detected
+    for that bin to be counted as present.
+
+    {min_prop}
+
+    ---
+
+    Genomes with highly fragmented assemblies may not contain a large number of completely-assembled
+    genes from the pan-genome collection.
+    To filter out these genomes, a lower bound is set on the number of genes that are contained in a
+    genome.
+    This threshold is set as a proportion relative to the median number of genes encoded by genomes
+    in this dataset.
+
+    {min_genes_rel_median}
+
+    ---
+    """).batch(
+        min_prop=mo.ui.number(
+            label="Minimum Proportion of Genes in Bin:",
+            start=0.01,
+            stop=1.0,
+            value=float(query_params.get("min_prop", '0.5')),
+            on_change=lambda val: query_params.set("min_prop", val)
+        ),
+        min_genes_rel_median=mo.ui.number(
+            label="Minimum Number of Genes per Genome (Median Fraction):",
+            start=0.01,
+            stop=1.0,
+            step=0.01,
+            value=float(query_params.get("min_genes_rel_median", '0.5')),
+            on_change=lambda val: query_params.set("min_genes_rel_median", val)
+        )
+    )
     return
 
 
