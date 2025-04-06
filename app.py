@@ -821,7 +821,15 @@ def _(
             """).batch(
                 annotate_by=mo.ui.dropdown(
                     options=self.pg.adata.obs.reset_index().columns.values,
-                    value=query_params.get("inspect_genomes_annotate_by", self.pg.adata.obs.index.name),
+                    value=query_params.get(
+                        "inspect_genomes_annotate_by",
+                        (
+                            "organism_organismName"
+                            if "organism_organismName" in self.pg.adata.obs.columns.values
+                            else
+                            self.pg.adata.obs.index.name
+                        )
+                    ),
                     on_change=lambda val: query_params.set("inspect_genomes_annotate_by", val)
                 ),
                 label_offset_x=mo.ui.number(value=0.),
@@ -1532,6 +1540,7 @@ def _(
                         .adata
                         .obs
                         .reindex(columns=[genome_annot])
+                        .fillna('None')
                     ], axis=1)
                     .groupby(bins + [genome_annot])
                     .apply(len, include_groups=False)
