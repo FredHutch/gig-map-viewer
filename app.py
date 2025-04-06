@@ -1110,11 +1110,24 @@ def _(
                 for pg in self.pg_list
             ])
 
+            # Combine the gene bin annotations across all pangneomes
+            self.bin_df = pd.concat([
+                (
+                    pg.adata
+                    .var
+                    .reindex(columns=["n_genes", "monophyly"])
+                    .assign(
+                        pangenome=pg.ds.name
+                    )
+                )
+                for pg in self.pg_list
+            ])
+
         def args(self, title: str):
             return mo.md(
                 "### Compare Pangenomes: " + title + """
 
-     - Number of Bins: {nbins}
+     - Number of Histogram Bins: {nbins}
      - Figure Height: {height}
 
             """).batch(
@@ -1132,17 +1145,27 @@ def _(
                 )
             )
 
-        def plot(self, nbins: int, height: int, y: str, ylabel: str, title: str):
+        def plot(
+            self,
+            axis: str,
+            nbins: int,
+            height: int,
+            y: str,
+            ylabel: str,
+            title: str,
+            log = False
+        ):
 
             fig = px.histogram(
-                self.genome_df,
+                self.genome_df if axis == "genomes" else self.bin_df,
                 y=y,
                 facet_col="pangenome",
                 labels={y: ylabel},
                 template="simple_white",
                 nbins=nbins,
                 height=height,
-                title=title
+                title=title,
+                log_x=log
             )
             fig.update_xaxes(matches=None)
             return fig
@@ -1157,36 +1180,58 @@ def _(ComparePangenomes, compare_pangenomes_datasets):
 
 @app.cell
 def _(compare_pangenomes):
-    compare_pangenomes_ngenes_args = compare_pangenomes.args("Genome Size")
-    compare_pangenomes_ngenes_args
-    return (compare_pangenomes_ngenes_args,)
+    compare_pangenomes_genomes_ngenes_args = compare_pangenomes.args("Genome Size")
+    compare_pangenomes_genomes_ngenes_args
+    return (compare_pangenomes_genomes_ngenes_args,)
 
 
 @app.cell
-def _(compare_pangenomes, compare_pangenomes_ngenes_args):
+def _(compare_pangenomes, compare_pangenomes_genomes_ngenes_args):
     compare_pangenomes.plot(
+        axis="genomes",
         y="n_genes",
         ylabel="# of Genes per Genome",
         title="Number of Genes per Genome",
-        **compare_pangenomes_ngenes_args.value
+        **compare_pangenomes_genomes_ngenes_args.value
     )
     return
 
 
 @app.cell
 def _(compare_pangenomes):
-    compare_pangenomes_monophyly_args = compare_pangenomes.args("Monophyly")
-    compare_pangenomes_monophyly_args
-    return (compare_pangenomes_monophyly_args,)
+    compare_pangenomes_genome_monophyly_args = compare_pangenomes.args("Genome Monophyly")
+    compare_pangenomes_genome_monophyly_args
+    return (compare_pangenomes_genome_monophyly_args,)
 
 
 @app.cell
-def _(compare_pangenomes, compare_pangenomes_monophyly_args):
+def _(compare_pangenomes, compare_pangenomes_genome_monophyly_args):
     compare_pangenomes.plot(
+        axis="genomes",
         y="monophyly",
         ylabel="Monophyly",
         title="Monophyly",
-        **compare_pangenomes_monophyly_args.value
+        **compare_pangenomes_genome_monophyly_args.value
+    )
+    return
+
+
+@app.cell
+def _(compare_pangenomes):
+    compare_pangenomes_bin_size_args = compare_pangenomes.args("Gene Bin Size")
+    compare_pangenomes_bin_size_args
+    return (compare_pangenomes_bin_size_args,)
+
+
+@app.cell
+def _(compare_pangenomes, compare_pangenomes_bin_size_args):
+    compare_pangenomes.plot(
+        axis="bins",
+        y="n_genes",
+        ylabel="# of Genes per Bin",
+        title="Number of Genes per Bin",
+        log=True,
+        **compare_pangenomes_bin_size_args.value
     )
     return
 
@@ -1317,69 +1362,249 @@ def _(mo):
 
 
 @app.cell
-def _(mo, pg):
-    # Show the user overlap between bins
-    bin_overlap_args = mo.md("""
+def _(id_to_name, mo, name_to_id, pangenome_datasets, query_params):
+    # Let the user select which pangenome dataset to get data from
+    compare_gene_bins_dataset_ui = mo.ui.dropdown(
+        label="Select Pangenome:",
+        value=id_to_name(pangenome_datasets, query_params.get("compare_gene_bins_dataset")),
+        options=name_to_id(pangenome_datasets),
+        on_change=lambda i: query_params.set("compare_gene_bins_dataset", i)
+    )
+    compare_gene_bins_dataset_ui
+    return (compare_gene_bins_dataset_ui,)
+
+
+@app.cell
+def _(client, compare_gene_bins_dataset_ui, mo, project_ui):
+    # Stop if the user has not selected a dataset
+    mo.stop(compare_gene_bins_dataset_ui.value is None)
+
+    # Get the selected dataset
+    compare_gene_bins_dataset = (
+        client
+        .get_project_by_id(project_ui.value)
+        .get_dataset_by_id(compare_gene_bins_dataset_ui.value)
+    )
+    return (compare_gene_bins_dataset,)
+
+
+@app.cell
+def _(
+    DataPortalDataset,
+    Pangenome,
+    make_pangenome,
+    make_subplots,
+    mo,
+    pd,
+    query_params,
+):
+    class CompareGeneBins:
+        pg: Pangenome
+
+        def __init__(self, ds: DataPortalDataset):
+            self.pg = make_pangenome(ds, float(query_params.get("min_prop", 0.5)))
+
+        def args(self):
+            return mo.md("""
     {bins}
+
+    {genome_annot}
 
     {height}
 
-    """).batch(
-        bins=mo.ui.multiselect(
-            label="Bins:",
-            options=sorted(pg.adata.var_names, key=lambda bin_id: int(bin_id.split(" ")[-1])),
-            value=list(pg.adata.var.sort_values(by="n_genes", ascending=False).head(10).index.values)
-        ),
-        height=mo.ui.number(
-            label="Figure Height:",
-            start=100,
-            value=800
-        )
-    )
+            """).batch(
+                bins=mo.ui.multiselect(
+                    label="Bins:",
+                    options=sorted(self.pg.adata.var_names, key=lambda bin_id: int(bin_id.split(" ")[-1])),
+                    value=list(self.pg.adata.var.sort_values(by="n_genes", ascending=False).head(10).index.values)
+                ),
+                genome_annot=mo.ui.dropdown(
+                    label="Genome Annotation:",
+                    options=(
+                        ['None'] + self.pg.adata.obs_keys()
+                    )
+                    ,
+                    value=(
+                        "assemblyInfo_biosample_description_organism_organismName"
+                        if "assemblyInfo_biosample_description_organism_organismName" in self.pg.adata.obs_keys()
+                        else 'None'
+                    )
+                ),
+                height=mo.ui.number(
+                    label="Figure Height:",
+                    start=100,
+                    value=800
+                )
+            )
+
+        def show_bin_overlap(
+            self,
+            bins: list,
+            height: int,
+            genome_annot: str,
+            genome_annot_groups=[]
+        ):
+            # Get the table of which genomes have these bins
+            presence = (
+                self
+                .pg
+                .adata
+                .to_df(layer="present")
+                .reindex(columns=bins)
+                .groupby(bins)
+                .apply(len, include_groups=False)
+                .sort_values(ascending=False)
+                .reset_index()
+            )
+    
+            # Make a plot with two panels
+            fig = make_subplots(
+                shared_xaxes=True,
+                rows=2 + int(genome_annot != 'None'),
+                cols=1,
+                start_cell="bottom-left",
+                horizontal_spacing=0.01,
+                vertical_spacing=0.1
+            )
+    
+            # Make a long form table for the points
+            points = pd.DataFrame([
+                dict(
+                    x=row_i,
+                    y=bins.index(bin),
+                    color="black" if present else "white",
+                    bin=bin,
+                    text=f"{bin} is {'Present' if present else 'Absent'}",
+                    present=present
+                )
+                for row_i, row in presence.reindex(columns=bins).iterrows()
+                for bin, present in row.items()
+            ])
+    
+            # Add the vertical lines
+            for x, x_df in points.query('present == 1').groupby("x"):
+                if x_df.shape[0] > 1:
+                    fig.add_scatter(
+                        x=[x, x],
+                        y=[x_df['y'].min(), x_df['y'].max()],
+                        mode="lines",
+                        line=dict(
+                            color="grey"
+                        ),
+                        showlegend=False
+                    )
+    
+            fig.add_scatter(
+                x=points["x"],
+                y=points["y"],
+                mode="markers",
+                marker=dict(
+                    color=points["color"],
+                    size=10,
+                    line=dict(
+                        width=1,
+                        color="black"
+                    )
+                ),
+                text=points["text"],
+                hovertemplate="%{text}<extra></extra>",
+                showlegend=False
+            )
+    
+            fig.add_bar(
+                x=list(range(presence.shape[0])),
+                y=presence[0],
+                row=2,
+                col=1,
+                showlegend=False,
+                hovertemplate="%{y:,} Genomes<extra></extra>",
+                marker=dict(color="black")
+            )
+            # Optionally add the annotation table
+            if genome_annot != 'None':
+                annot_df = (
+                    pd.concat([
+                        self.pg
+                        .adata
+                        .to_df(layer="present")
+                        .reindex(columns=bins),
+                        self.pg
+                        .adata
+                        .obs
+                        .reindex(columns=[genome_annot])
+                    ], axis=1)
+                    .groupby(bins + [genome_annot])
+                    .apply(len, include_groups=False)
+                    .sort_values(ascending=False)
+                    .reset_index()
+                    .pivot_table(
+                        columns=bins,
+                        index=genome_annot,
+                        values=0
+                    )
+                    .reindex(
+                        columns=presence.set_index(bins).index
+                    )
+                    .fillna(0)
+                )
+                if len(genome_annot_groups) > 0:
+                    annot_df = annot_df.reindex(index=genome_annot_groups)
+                    annot_df = annot_df.dropna(
+                        axis=0,
+                        how="all"
+                    )
+                fig.add_heatmap(
+                    z=annot_df.values,
+                    y=annot_df.index.values,
+                    row=3,
+                    col=1,
+                    colorscale="blues",
+                    hovertemplate="%{y}<br>%{z} Genomes<extra></extra>"
+                )
+            fig.update_layout(
+                template="simple_white",
+                xaxis=dict(
+                    showticklabels=False,
+                    title_text="Presence / Absence"
+                ),
+                yaxis=dict(
+                    tickmode="array",
+                    tickvals=list(range(len(bins))),
+                    ticktext=bins
+                ),
+                yaxis2=dict(
+                    title_text="Number of Genomes"
+                ),
+                height=height
+            )
+            return fig
+
+    return (CompareGeneBins,)
+
+
+@app.cell
+def _(CompareGeneBins, compare_gene_bins_dataset):
+    compare_gene_bins = CompareGeneBins(compare_gene_bins_dataset)
+    return (compare_gene_bins,)
+
+
+@app.cell
+def _(compare_gene_bins):
+    # Show the user overlap between bins
+    bin_overlap_args = compare_gene_bins.args()
     bin_overlap_args
     return (bin_overlap_args,)
 
 
 @app.cell
-def _(mo, pangenome_dataset_ui):
-    mo.stop(pangenome_dataset_ui.value is None)
-    genome_annot_enabled_ui=mo.ui.checkbox(
-        label="Annotate Genomes",
-        value=False
-    )
-    genome_annot_enabled_ui
-    return (genome_annot_enabled_ui,)
-
-
-@app.cell
-def _(genome_annot_enabled_ui, mo, pg):
-    genome_annot_ui=mo.ui.dropdown(
-        label="Annotation Column:",
-        options=(
-            ['None'] + pg.adata.obs_keys()
-            if genome_annot_enabled_ui.value
-            else ['None']
-        )
-        ,
-        value=(
-            "assemblyInfo_biosample_description_organism_organismName"
-            if ("assemblyInfo_biosample_description_organism_organismName" in pg.adata.obs_keys()) and genome_annot_enabled_ui.value
-            else 'None'
-        )
-    )
-    genome_annot_ui
-    return (genome_annot_ui,)
-
-
-@app.cell
-def _(genome_annot_ui, mo, pg):
+def _(bin_overlap_args, compare_gene_bins, mo):
     # If an annotation is selected, let the user pick the groups
     def genome_annot_groups_options():
         return (
             []
-            if genome_annot_ui.value == 'None'
+            if bin_overlap_args.value["genome_annot"] == 'None'
             else
-            pg.adata.obs[genome_annot_ui.value].drop_duplicates().sort_values().values
+            compare_gene_bins.pg.adata.obs[bin_overlap_args.value["genome_annot"]].drop_duplicates().sort_values().values
         )
 
     genome_annot_groups = mo.ui.multiselect(
@@ -1392,158 +1617,14 @@ def _(genome_annot_ui, mo, pg):
 
 
 @app.cell
-def _(make_subplots, pd, pg_display):
-    def show_bin_overlap(bins: list, height: int, genome_annot: str, genome_annot_groups=[]):
-        # Get the table of which genomes have these bins
-        presence = (
-            pg_display
-            .adata
-            .to_df(layer="present")
-            .reindex(columns=bins)
-            .groupby(bins)
-            .apply(len, include_groups=False)
-            .sort_values(ascending=False)
-            .reset_index()
-        )
-
-        # Make a plot with two panels
-        fig = make_subplots(
-            shared_xaxes=True,
-            rows=2 + int(genome_annot != 'None'),
-            cols=1,
-            start_cell="bottom-left",
-            # column_widths=[2, 1, 1],
-            # row_heights=[2, 1, 1, 1],
-            horizontal_spacing=0.01,
-            vertical_spacing=0.1
-        )
-
-        # Make a long form table for the points
-        points = pd.DataFrame([
-            dict(
-                x=row_i,
-                y=bins.index(bin),
-                color="black" if present else "white",
-                bin=bin,
-                text=f"{bin} is {'Present' if present else 'Absent'}",
-                present=present
-            )
-            for row_i, row in presence.reindex(columns=bins).iterrows()
-            for bin, present in row.items()
-        ])
-
-        # Add the vertical lines
-        for x, x_df in points.query('present == 1').groupby("x"):
-            if x_df.shape[0] > 1:
-                fig.add_scatter(
-                    x=[x, x],
-                    y=[x_df['y'].min(), x_df['y'].max()],
-                    mode="lines",
-                    line=dict(
-                        color="grey"
-                    ),
-                    showlegend=False
-                )
-
-        fig.add_scatter(
-            x=points["x"],
-            y=points["y"],
-            mode="markers",
-            marker=dict(
-                color=points["color"],
-                size=10,
-                line=dict(
-                    width=1,
-                    color="black"
-                )
-            ),
-            text=points["text"],
-            hovertemplate="%{text}<extra></extra>",
-            showlegend=False
-        )
-
-        fig.add_bar(
-            x=list(range(presence.shape[0])),
-            y=presence[0],
-            row=2,
-            col=1,
-            showlegend=False,
-            hovertemplate="%{y:,} Genomes<extra></extra>",
-            marker=dict(color="black")
-        )
-        # Optionally add the annotation table
-        if genome_annot != 'None':
-            annot_df = (
-                pd.concat([
-                    pg_display
-                    .adata
-                    .to_df(layer="present")
-                    .reindex(columns=bins),
-                    pg_display
-                    .adata
-                    .obs
-                    .reindex(columns=[genome_annot])
-                ], axis=1)
-                .groupby(bins + [genome_annot])
-                .apply(len, include_groups=False)
-                .sort_values(ascending=False)
-                .reset_index()
-                .pivot_table(
-                    columns=bins,
-                    index=genome_annot,
-                    values=0
-                )
-                .reindex(
-                    columns=presence.set_index(bins).index
-                )
-                .fillna(0)
-            )
-            if len(genome_annot_groups) > 0:
-                annot_df = annot_df.reindex(index=genome_annot_groups)
-                annot_df = annot_df.dropna(
-                    axis=0,
-                    how="all"
-                )
-            fig.add_heatmap(
-                z=annot_df.values,
-                y=annot_df.index.values,
-                row=3,
-                col=1,
-                colorscale="blues",
-                hovertemplate="%{y}<br>%{z} Genomes<extra></extra>"
-            )
-        fig.update_layout(
-            template="simple_white",
-            xaxis=dict(
-                showticklabels=False,
-                title_text="Presence / Absence"
-            ),
-            yaxis=dict(
-                tickmode="array",
-                tickvals=list(range(len(bins))),
-                ticktext=bins
-            ),
-            yaxis2=dict(
-                title_text="Number of Genomes"
-            ),
-            height=height
-        )
-        return fig
-
-        return presence
-    return (show_bin_overlap,)
+def _():
+    return
 
 
 @app.cell
-def _(
-    bin_overlap_args,
-    genome_annot_groups,
-    genome_annot_ui,
-    show_bin_overlap,
-):
-    show_bin_overlap(
+def _(bin_overlap_args, compare_gene_bins, genome_annot_groups):
+    compare_gene_bins.show_bin_overlap(
         genome_annot_groups=genome_annot_groups.value,
-        genome_annot=genome_annot_ui.value,
         **bin_overlap_args.value
     )
     return
