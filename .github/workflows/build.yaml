@@ -1,0 +1,24 @@
+on: push
+
+jobs:
+    build:
+        runs-on: ubuntu-latest
+
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v3
+            
+            - uses: actions/setup-python@v3
+              with:
+                python-version: '3.11'
+
+            - run: pip install marimo
+
+            - name: 📄 Export notebook
+              run: |
+                  marimo export html-wasm app.py -o static --mode run
+
+            - name: 📦 Upload Pages Artifact
+              uses: actions/upload-pages-artifact@v3
+              with:
+                  path: static
