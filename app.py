@@ -16,7 +16,8 @@ def _(mo):
                     "#compare-pangenomes": f"{mo.icon('lucide:map-plus')} Compare Pangenomes",
                     "#inspect-gene-bin": f"{mo.icon('lucide:box')} Inspect Gene Bin",
                     "#compare-gene-bins": f"{mo.icon('lucide:boxes')} Compare Gene Bins",
-                    "#analyze-metagenomes": f"{mo.icon('lucide:test-tubes')} Analyze Metagenomes",
+                    "#inspect-metagenome": f"{mo.icon('lucide:test-tube-diagonal')} Inspect Metagenome",
+                    "#compare-metagenomes": f"{mo.icon('lucide:test-tubes')} Compare Metagenomes",
                     "#settings": f"{mo.icon('lucide:settings')} Settings"
                 },
                 orientation="vertical",
@@ -92,6 +93,7 @@ async def _(micropip, mo, running_in_wasm):
         from time import sleep
         from typing import Dict, Optional, List
         from functools import lru_cache
+        from itertools import groupby
         import base64
         from urllib.parse import quote_plus
         from copy import copy
@@ -118,6 +120,7 @@ async def _(micropip, mo, running_in_wasm):
         StringIO,
         base64,
         copy,
+        groupby,
         list_tenants,
         lru_cache,
         pyodide_patch_all,
@@ -128,11 +131,20 @@ async def _(micropip, mo, running_in_wasm):
 
 @app.cell
 def _(DataPortalDataset):
-    # Define the types of datasets which can be read in
+    # Define the types of datasets which can be read in containing pangenome information
     # This is used to filter the dataset selector, below
     def filter_datasets_pangenome(dataset: DataPortalDataset):
         return "hutch-gig-map-build-pangenome" in dataset.process_id and dataset.status == "COMPLETED"
     return (filter_datasets_pangenome,)
+
+
+@app.cell
+def _(DataPortalDataset):
+    # Define the types of datasets which can be read in
+    # This is used to filter the dataset selector, below
+    def filter_datasets_metagenome(dataset: DataPortalDataset):
+        return "hutch-gig-map-align-pangenome" in dataset.process_id and dataset.status == "COMPLETED"
+    return (filter_datasets_metagenome,)
 
 
 @app.cell
@@ -620,7 +632,7 @@ def _(
 
             # Make a table with the number of genes from each bin which are found in each genome
             self.n_genes_per_genome = self.pg.adata.to_df(layer="present") * self.pg.adata.var["n_genes"]
-    
+
             # Calculate the proportion of each genome made up by each bin
             self.prop_genes_per_genome = self.n_genes_per_genome.apply(lambda r: r / r.sum(), axis=1)
 
@@ -874,7 +886,7 @@ def _(
                 return mo.md("Select bins to display")
 
             with mo.status.spinner("Generating Plot:"):
-        
+
                 # Choose the bins to plot based on the mean proportion across genomes
                 bins_to_plot = list(self.prop_genes_per_genome.mean().sort_values().tail(n_bins).index.values)
 
@@ -882,13 +894,13 @@ def _(
                 for _bin in include_bins:
                     if _bin not in bins_to_plot:
                         bins_to_plot.append(_bin)
-        
+
                 # Drop all of the unselected bins, and add an "Other" column
                 n_genes_per_genome = pd.concat([
                     self.n_genes_per_genome.reindex(columns=bins_to_plot),
                     pd.DataFrame(dict(Other=self.n_genes_per_genome.drop(columns=bins_to_plot).sum(axis=1)))
                 ], axis=1)
-        
+
                 # Make a label for each genome
                 genome_label = {
                     genome: "<br>".join([
@@ -899,7 +911,7 @@ def _(
                     ])
                     for genome, genome_count in n_genes_per_genome.iterrows()
                 }
-        
+
                 # Make a table to use only for point size
                 # For each genome, take the cumulative sum from smallest to largest
                 point_size_per_genome = (
@@ -908,7 +920,7 @@ def _(
                     .apply(lambda r: r.iloc[::-1].cumsum(), axis=1)
                     .apply(lambda r: r / r.max(), axis=1)
                 )
-        
+
                 # Make a table to plot which includes the proportion for every single bin
                 plot_df = pd.DataFrame([
                     dict(
@@ -924,14 +936,14 @@ def _(
                     for bin in point_size_per_genome.columns.values
                     if n_genes_per_genome.loc[genome, bin] > 0 and genome not in omit_genomes
                 ]).sort_values(by="point_size", ascending=False)
-        
+
                 # Add the genome metadata
                 plot_df = plot_df.merge(
                     self.pg.adata.obs,
                     right_index=True,
                     left_on="genome"
                 )
-        
+
                 fig = px.scatter(
                     plot_df,
                     x="x",
@@ -961,7 +973,7 @@ def _(
                     legendgrouptitle=dict(text="Annotation"),
                     name=annotate_by
                 )
-        
+
                 fig.update_traces(
                     hovertemplate="<b>%{customdata[0]}</b><br><br>%{customdata[1]}<extra></extra>",
                     marker=dict(line=dict(width=0))
@@ -1131,14 +1143,23 @@ def _(
                 for pg in self.pg_list
             ])
 
-        def args(self, title: str):
+        def args(self):
             return mo.md(
-                "### Compare Pangenomes: " + title + """
+                """### Compare Pangenomes
 
+     - Compare By: {compare_by}
      - Number of Histogram Bins: {nbins}
      - Figure Height: {height}
 
             """).batch(
+                compare_by=mo.ui.dropdown(
+                    options=[
+                        "Genome Size",
+                        "Genome Monophyly",
+                        "Gene Bin Size"
+                    ],
+                    value="Genome Size"
+                ),
                 nbins=mo.ui.number(
                     start=2,
                     stop=100,
@@ -1155,14 +1176,28 @@ def _(
 
         def plot(
             self,
-            axis: str,
+            compare_by: str,
             nbins: int,
             height: int,
-            y: str,
-            ylabel: str,
-            title: str,
-            log = False
         ):
+            if compare_by == "Genome Size":
+                axis = "genomes"
+                y = "n_genes"
+                ylabel = "# of Genes per Genome"
+                title = "Number of Genes per Genome"
+                log = False
+            elif compare_by == "Genome Monophyly":
+                axis = "genomes"
+                y = "monophyly"
+                ylabel = "Monophyly"
+                title = "Genome Monophyly"
+                log = False
+            elif compare_by == "Gene Bin Size":
+                axis = "bins"
+                y = "n_genes"
+                ylabel = "# of Genes per Bin"
+                title = "Number of Genes per Bin"
+                log = True
 
             fig = px.histogram(
                 self.genome_df if axis == "genomes" else self.bin_df,
@@ -1182,64 +1217,21 @@ def _(
 
 @app.cell
 def _(ComparePangenomes, compare_pangenomes_datasets):
-    compare_pangenomes = ComparePangenomes(compare_pangenomes_datasets)
-    return (compare_pangenomes,)
+    Gcompare_pangenomes = ComparePangenomes(compare_pangenomes_datasets)
+    return (Gcompare_pangenomes,)
 
 
 @app.cell
 def _(compare_pangenomes):
-    compare_pangenomes_genomes_ngenes_args = compare_pangenomes.args("Genome Size")
-    compare_pangenomes_genomes_ngenes_args
-    return (compare_pangenomes_genomes_ngenes_args,)
+    compare_pangenomes_args = compare_pangenomes.args()
+    compare_pangenomes_args
+    return (compare_pangenomes_args,)
 
 
 @app.cell
-def _(compare_pangenomes, compare_pangenomes_genomes_ngenes_args):
+def _(compare_pangenomes, compare_pangenomes_args):
     compare_pangenomes.plot(
-        axis="genomes",
-        y="n_genes",
-        ylabel="# of Genes per Genome",
-        title="Number of Genes per Genome",
-        **compare_pangenomes_genomes_ngenes_args.value
-    )
-    return
-
-
-@app.cell
-def _(compare_pangenomes):
-    compare_pangenomes_genome_monophyly_args = compare_pangenomes.args("Genome Monophyly")
-    compare_pangenomes_genome_monophyly_args
-    return (compare_pangenomes_genome_monophyly_args,)
-
-
-@app.cell
-def _(compare_pangenomes, compare_pangenomes_genome_monophyly_args):
-    compare_pangenomes.plot(
-        axis="genomes",
-        y="monophyly",
-        ylabel="Monophyly",
-        title="Monophyly",
-        **compare_pangenomes_genome_monophyly_args.value
-    )
-    return
-
-
-@app.cell
-def _(compare_pangenomes):
-    compare_pangenomes_bin_size_args = compare_pangenomes.args("Gene Bin Size")
-    compare_pangenomes_bin_size_args
-    return (compare_pangenomes_bin_size_args,)
-
-
-@app.cell
-def _(compare_pangenomes, compare_pangenomes_bin_size_args):
-    compare_pangenomes.plot(
-        axis="bins",
-        y="n_genes",
-        ylabel="# of Genes per Bin",
-        title="Number of Genes per Bin",
-        log=True,
-        **compare_pangenomes_bin_size_args.value
+        **compare_pangenomes_args.value
     )
     return
 
@@ -1289,7 +1281,7 @@ def _(DataPortalDataset, Pangenome, make_pangenome, mo, query_params):
             return mo.md(
                 """
         {bin_id}
-    
+
         {genome_columns}
                 """
             ).batch(
@@ -1317,7 +1309,7 @@ def _(DataPortalDataset, Pangenome, make_pangenome, mo, query_params):
                     )
                 )
             )
-    
+
             # Show the list of genomes containing the bin
             genome_df = (
                 self.pg.adata
@@ -1328,7 +1320,7 @@ def _(DataPortalDataset, Pangenome, make_pangenome, mo, query_params):
                 ]
                 .obs
             )
-    
+
             return mo.vstack([
                 mo.md(bin_id),
                 mo.md(f"{gene_df.shape[0]:,} Genes / {genome_df.shape[0]:,} Genomes"),
@@ -1464,7 +1456,7 @@ def _(
                 .sort_values(ascending=False)
                 .reset_index()
             )
-    
+
             # Make a plot with two panels
             fig = make_subplots(
                 shared_xaxes=True,
@@ -1474,7 +1466,7 @@ def _(
                 horizontal_spacing=0.01,
                 vertical_spacing=0.1
             )
-    
+
             # Make a long form table for the points
             points = pd.DataFrame([
                 dict(
@@ -1488,7 +1480,7 @@ def _(
                 for row_i, row in presence.reindex(columns=bins).iterrows()
                 for bin, present in row.items()
             ])
-    
+
             # Add the vertical lines
             for x, x_df in points.query('present == 1').groupby("x"):
                 if x_df.shape[0] > 1:
@@ -1501,7 +1493,7 @@ def _(
                         ),
                         showlegend=False
                     )
-    
+
             fig.add_scatter(
                 x=points["x"],
                 y=points["y"],
@@ -1518,7 +1510,7 @@ def _(
                 hovertemplate="%{text}<extra></extra>",
                 showlegend=False
             )
-    
+
             fig.add_bar(
                 x=list(range(presence.shape[0])),
                 y=presence[0],
@@ -1587,7 +1579,6 @@ def _(
                 height=height
             )
             return fig
-
     return (CompareGeneBins,)
 
 
@@ -1636,6 +1627,375 @@ def _(bin_overlap_args, compare_gene_bins, genome_annot_groups):
         genome_annot_groups=genome_annot_groups.value,
         **bin_overlap_args.value
     )
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""## Inspect Metagenome""")
+    return
+
+
+@app.cell
+def _(client, filter_datasets_metagenome, mo, project_ui):
+    # Stop if the user has not selected a project
+    mo.stop(project_ui.value is None)
+
+    # Get the list of metagenome datasets available to the user
+    metagenome_datasets = [
+        dataset
+        for dataset in client.get_project_by_id(project_ui.value).list_datasets()
+        if filter_datasets_metagenome(dataset)
+    ]
+    metagenome_datasets.sort(key=lambda ds: ds.created_at, reverse=True)
+    return (metagenome_datasets,)
+
+
+@app.cell
+def _(id_to_name, metagenome_datasets, mo, name_to_id, query_params):
+    # Let the user select which metagenome dataset to get data from
+    inspect_metagenome_datasets_ui = mo.ui.multiselect(
+        label="Select Metagenomes:",
+        value=[
+            id_to_name(
+                metagenome_datasets,
+                dataset_id
+            )
+            for dataset_id in (
+                query_params.get("inspect_metagenome").split(",")
+                if query_params.get("inspect_metagenome")
+                else []
+            )
+        ],
+        options=name_to_id(metagenome_datasets),
+        on_change=lambda i: query_params.set("inspect_metagenome", ','.join(i))
+    )
+    inspect_metagenome_datasets_ui
+    return (inspect_metagenome_datasets_ui,)
+
+
+@app.cell
+def _(client, inspect_metagenome_datasets_ui, mo, project_ui):
+    # Stop if the user has not selected a dataset
+    mo.stop(inspect_metagenome_datasets_ui.value is None)
+
+    # Get the selected dataset
+    inspect_metagenome_datasets = [
+        (
+            client
+            .get_project_by_id(project_ui.value)
+            .get_dataset_by_id(dataset_id)
+        )
+        for dataset_id in inspect_metagenome_datasets_ui.value
+    ]
+    return (inspect_metagenome_datasets,)
+
+
+@app.cell
+def _():
+    return
+
+
+@app.cell
+def _(inspect_metagenome_datasets, mo):
+    mo.md("\n".join([
+        f" - {dataset.name}"
+        for dataset in inspect_metagenome_datasets
+    ]))
+    return
+
+
+@app.cell
+def _(
+    AnnData,
+    DataPortalDataset,
+    Dict,
+    List,
+    Pangenome,
+    cluster,
+    lru_cache,
+    mo,
+    pangenome_datasets,
+    pd,
+    query_params,
+):
+    class Metagenome:
+        """
+        Object containing information about a metagenome.
+        Abundance information for each bin in each specimen is given as the number of aligned reads.
+        To provide context for the abundance, each observation has metadata for:
+            - genes:tot_reads
+            - genes:aligned_reads
+            - genes:detected_genes
+        """
+        ds: DataPortalDataset
+        adata: AnnData
+        bin_contents: Dict[str, pd.DataFrame]
+        genome_tree: cluster.hierarchy.ClusterNode
+        tree_df: pd.DataFrame
+        clades: List[set]
+
+        def __init__(self, ds: DataPortalDataset):
+            self.ds = ds
+            self.adata = self._make_adata()
+
+            # Get the pangenome that was used for this analysis
+            self.pg = Pangenome(
+                next((
+                    pangenome_dataset
+                    for pangenome_dataset in pangenome_datasets
+                    if pangenome_dataset.id == (
+                        self.ds
+                        .params
+                        .additional_properties
+                        ['inputs']
+                        ['pangenome']
+                        .rsplit("/", 1)[-1]
+                    )
+                )),
+                min_prop=float(query_params.get("min_prop", 0.5))
+            )
+
+            self.calculate_relative_sequencing_depth()
+
+            # Get the dataset containing the WGS reads used for this analysis
+            self.ngs = self.ds.source_datasets[0]
+
+        def to_df(self, layer="rel_depth"):
+            # DataFrame of relative abundance annotated by the source datasets
+            return (
+                self.adata
+                .to_df(layer=layer)
+                .rename(
+                    columns=lambda bin_name: f"{self.pg.ds.name} ({self.pg.ds.id.split('-')[0]}) {bin_name}",
+                    index=lambda specimen_name: f"{self.ngs.name} ({self.ngs.id.split('-')[0]}) {specimen_name}"
+                )
+            )
+
+        def calculate_relative_sequencing_depth(self):
+
+            # Annotation of all genes - including 'bin' and 'length'
+            gene_annot = self.read_csv("data/csv/metagenome.genes.var.csv.gz")
+            # Calculate the aggregate gene length per bin
+            self.adata.var = self.adata.var.assign(
+                combined_length_aa=gene_annot.groupby("bin")["length"].sum()
+            )
+
+            # Sequencing Depth
+            # (n_reads / gene_length_aa)
+            self.adata.layers["depth"] = self.adata.to_df() / self.adata.var["combined_length_aa"]
+
+            # Relative Sequencing Depth, divided by the median non-zero value for all genes detected
+            # Note that the calculation for this is a bit complicated because we need to account for
+            # the different number of genes between bins
+            self.adata.layers["rel_depth"] = self.adata.to_df(layer="depth").apply(
+                self.calculate_relative_sequencing_depth_per_sample,
+                axis=1
+            )
+
+        def calculate_relative_sequencing_depth_per_sample(self, r: pd.Series):
+            # Sort the bins in order of increasing sequencing depth (ignoring zero values)
+            sorted_depths = r.loc[r > 0].sort_values(ascending=True)
+
+            if sorted_depths.shape[0] == 1:
+                return r / sorted_depths.values[0]
+
+            # Get the sizes of these bins
+            bin_size = (
+                self.pg
+                .adata.var
+                .reindex(index=sorted_depths.index)
+                ['n_genes']
+            
+            )
+
+            # Calculate the cumulative sum of bin sizes
+            cumsum_bin_size = bin_size.cumsum()
+
+            # Take the depth of the bin which accounts for half of the genes by aggregate
+            median_depth = sorted_depths.loc[
+                cumsum_bin_size > (cumsum_bin_size.max() / 2.)
+            ].min()
+
+            return r / median_depth
+
+        def _make_adata(self):
+            # Observation (sample) metadata
+            obs = self.read_csv("data/csv/metagenome.obs.csv.gz", index_col=0)
+            # Gene Bin metadata (just n_genes)
+            var = self.read_csv("data/csv/metagenome.bins.var.csv.gz", index_col=0)
+            # Number of reads per bin, per observation
+            X = self.read_csv("data/csv/metagenome.bins.X.csv.gz", index_col=0).map(int)
+
+            return AnnData(
+                X=X,
+                obs=obs.reindex(X.index),
+                var=var.reindex(index=X.columns)
+            )
+
+        def read_csv(self, fp: str, **kwargs):
+            with mo.status.spinner(f"Reading File: {fp} ({self.ds.name})"):
+                return self.ds.list_files().get_by_id(fp).read_csv(**kwargs)
+
+
+    # Cache the creation of pangenome objects
+    @lru_cache
+    def make_metagenome(ds: DataPortalDataset):
+        with mo.status.spinner("Loading data..."):
+            return Metagenome(ds)
+    return Metagenome, make_metagenome
+
+
+@app.cell
+def _(
+    List,
+    Metagenome,
+    Optional,
+    groupby,
+    inspect_metagenome_datasets,
+    make_metagenome,
+    mo,
+    pd,
+):
+    class InspectMetagenome:
+        mgs: List[Metagenome]
+        datasets_df: pd.DataFrame
+
+        def __init__(self, mgs: List[Metagenome]):
+            self.mgs = mgs
+
+            # Make a table of all of the pangenomes that each metagenome uses
+            self.datasets_df = pd.DataFrame([
+                dict(
+                    ngs_id=mg.ngs.id,
+                    pangenome_id=mg.pg.ds.id,
+                    pangenome_name=mg.pg.ds.name,
+                    mg_id=mg.ds.id
+                )
+                for mg in self.mgs
+            ])
+
+            # Make a combined relative abundance table
+            # Group each distinct ngs dataset analyzed with different pangenomes
+            # Concatenate each distinct ngs dataset
+            self.relative_abundance = pd.concat(
+                [
+                    pd.concat(
+                        [
+                            mg.to_df()
+                            for mg in same_ngs_mgs
+                        ],
+                        axis=1
+                    )
+                    for ngs_id, same_ngs_mgs in groupby(
+                        self.mgs,
+                        lambda mg: mg.ngs.id
+                    )
+                ],
+                axis=0
+            ).fillna(0)
+
+        def args(self):
+            return mo.md("""
+    ### Inspect Pangenome: Heatmap Options
+
+     - {top_n_bins}
+     - {include_bins}
+     - {filter_specimens_query}
+     - {height}
+            """).batch(
+                top_n_bins=mo.ui.number(
+                    label="Show N Bins (Largest # of Genes):",
+                    start=0,
+                    value=40,
+                    step=1
+                ),
+                include_bins=mo.ui.multiselect(
+                    label="Show Specific Bins:",
+                    value=[],
+                    options=self.relative_abundance.columns.values
+                ),
+                filter_specimens_query=mo.ui.text(
+                    label="Filter Specimens by Query Expression (optional)",
+                    placeholder="colName == 'Group A'"
+                ),
+                height=mo.ui.number(
+                    label="Figure Height",
+                    start=100,
+                    value=800
+                )
+            )
+
+
+        def plot(
+            self,
+            top_n_bins: int,
+            include_bins: List[str],
+            filter_specimens_query: Optional[str],
+            height: int
+        ):
+            pass
+
+    inspect_metagenome = InspectMetagenome([
+        make_metagenome(metagenome_dataset)
+        for metagenome_dataset in inspect_metagenome_datasets
+    ])
+    return InspectMetagenome, inspect_metagenome
+
+
+@app.cell
+def _(inspect_metagenome):
+    inspect_metagenome.relative_abundance
+    return
+
+
+@app.cell
+def _(inspect_metagenome):
+    inspect_metagenome_args = inspect_metagenome.args()
+    inspect_metagenome_args
+    return (inspect_metagenome_args,)
+
+
+@app.cell
+def _(inspect_metagenome, inspect_metagenome_args):
+    inspect_metagenome.plot(**inspect_metagenome_args.value)
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""## Compare Metagenomes""")
+    return
+
+
+@app.cell
+def _(Metagenome, make_metagenome, metagenome_dataset, mo):
+    class CompareMetagenome:
+        mg: Metagenome
+
+        def __init__(self, mg: Metagenome):
+            self.mg = mg
+
+        def args(self):
+            return mo.md("""""").batch()
+
+        def plot(self):
+            pass
+
+    compare_metagenome = CompareMetagenome(make_metagenome(metagenome_dataset))
+    return CompareMetagenome, compare_metagenome
+
+
+@app.cell
+def _(compare_metagenome):
+    compare_metagenome_args = compare_metagenome.args()
+    compare_metagenome_args
+    return (compare_metagenome_args,)
+
+
+@app.cell
+def _(compare_metagenome, compare_metagenome_args):
+    compare_metagenome.plot(**compare_metagenome_args.value)
     return
 
 
