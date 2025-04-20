@@ -16,7 +16,7 @@ def _(mo):
                     "#compare-pangenomes": f"{mo.icon('lucide:map-plus')} Compare Pangenomes",
                     "#inspect-gene-bin": f"{mo.icon('lucide:box')} Inspect Gene Bin",
                     "#compare-gene-bins": f"{mo.icon('lucide:boxes')} Compare Gene Bins",
-                    "#inspect-metagenome": f"{mo.icon('lucide:test-tube-diagonal')} Inspect Metagenome",
+                    "#inspect-metagenomes": f"{mo.icon('lucide:test-tube-diagonal')} Inspect Metagenomes",
                     "#compare-metagenomes": f"{mo.icon('lucide:test-tubes')} Compare Metagenomes",
                     "#settings": f"{mo.icon('lucide:settings')} Settings"
                 },
@@ -91,8 +91,9 @@ async def _(micropip, mo, running_in_wasm):
         from io import StringIO, BytesIO
         from queue import Queue
         from time import sleep
-        from typing import Dict, Optional, List
+        from typing import Dict, Optional, List, Iterable
         from functools import lru_cache
+        from collections import defaultdict
         from itertools import groupby
         import base64
         from urllib.parse import quote_plus
@@ -114,12 +115,14 @@ async def _(micropip, mo, running_in_wasm):
         DataPortalLogin,
         Dict,
         FileService,
+        Iterable,
         List,
         Optional,
         Queue,
         StringIO,
         base64,
         copy,
+        defaultdict,
         groupby,
         list_tenants,
         lru_cache,
@@ -601,7 +604,11 @@ def _(mo):
         import plotly.express as px
         from plotly.subplots import make_subplots
         import numpy as np
-    return make_subplots, np, px
+        import seaborn as sns
+        import matplotlib.pyplot as plt
+        from matplotlib.patches import Patch
+
+    return Patch, make_subplots, np, plt, px, sns
 
 
 @app.cell
@@ -1217,8 +1224,8 @@ def _(
 
 @app.cell
 def _(ComparePangenomes, compare_pangenomes_datasets):
-    Gcompare_pangenomes = ComparePangenomes(compare_pangenomes_datasets)
-    return (Gcompare_pangenomes,)
+    compare_pangenomes = ComparePangenomes(compare_pangenomes_datasets)
+    return (compare_pangenomes,)
 
 
 @app.cell
@@ -1632,7 +1639,7 @@ def _(bin_overlap_args, compare_gene_bins, genome_annot_groups):
 
 @app.cell
 def _(mo):
-    mo.md(r"""## Inspect Metagenome""")
+    mo.md(r"""## Inspect Metagenomes""")
     return
 
 
@@ -1706,7 +1713,7 @@ def _(inspect_metagenome_datasets, mo):
 
 
 @app.cell
-def _(
+def define_metagenome_class(
     AnnData,
     DataPortalDataset,
     Dict,
@@ -1715,6 +1722,7 @@ def _(
     cluster,
     lru_cache,
     mo,
+    np,
     pangenome_datasets,
     pd,
     query_params,
@@ -1761,16 +1769,43 @@ def _(
             # Get the dataset containing the WGS reads used for this analysis
             self.ngs = self.ds.source_datasets[0]
 
-        def to_df(self, layer="rel_depth"):
+        def to_df(self, layer: str, rename_bins=False, rename_specimens=False):
             # DataFrame of relative abundance annotated by the source datasets
-            return (
+            df = (
                 self.adata
                 .to_df(layer=layer)
-                .rename(
-                    columns=lambda bin_name: f"{self.pg.ds.name} ({self.pg.ds.id.split('-')[0]}) {bin_name}",
-                    index=lambda specimen_name: f"{self.ngs.name} ({self.ngs.id.split('-')[0]}) {specimen_name}"
+                .drop(
+                    columns=[np.nan],
+                    index=[np.nan],
+                    errors="ignore"
                 )
             )
+
+            if rename_bins:
+                df = df.rename(columns=self.rename_bin)
+            if rename_specimens:
+                df = df.rename(index=self.rename_specimen)
+            return df
+
+        def obs(self, rename=False):
+            obs = self.adata.obs
+            obs.drop(np.nan, errors="ignore", inplace=True)
+            if rename:
+                obs = obs.rename(index=self.rename_specimen)
+            return obs
+
+        def var(self, rename=False):
+            var = self.adata.var
+            var.drop(np.nan, errors="ignore", inplace=True)
+            if rename:
+                var = var.rename(index=self.rename_bin)
+            return var
+
+        def rename_bin(self, bin_name):
+            return f"{bin_name} {self.pg.ds.name} ({self.pg.ds.id.split('-')[0]})"
+
+        def rename_specimen(self, specimen_name):
+            return f"{specimen_name} {self.ngs.name} ({self.ngs.id.split('-')[0]})"
 
         def calculate_relative_sequencing_depth(self):
 
@@ -1781,43 +1816,23 @@ def _(
                 combined_length_aa=gene_annot.groupby("bin")["length"].sum()
             )
 
-            # Sequencing Depth
-            # (n_reads / gene_length_aa)
-            self.adata.layers["depth"] = self.adata.to_df() / self.adata.var["combined_length_aa"]
-
-            # Relative Sequencing Depth, divided by the median non-zero value for all genes detected
-            # Note that the calculation for this is a bit complicated because we need to account for
-            # the different number of genes between bins
-            self.adata.layers["rel_depth"] = self.adata.to_df(layer="depth").apply(
-                self.calculate_relative_sequencing_depth_per_sample,
-                axis=1
+            # Sequencing Depth in units of RPK (reads per kilobase)
+            # (n_reads / (gene_length_aa * 3 / 1000))
+            self.adata.layers["rpk"] = (
+                self.adata.to_df()
+                /
+                (self.adata.var["combined_length_aa"] * 3. / 1000.)
             )
 
-        def calculate_relative_sequencing_depth_per_sample(self, r: pd.Series):
-            # Sort the bins in order of increasing sequencing depth (ignoring zero values)
-            sorted_depths = r.loc[r > 0].sort_values(ascending=True)
-
-            if sorted_depths.shape[0] == 1:
-                return r / sorted_depths.values[0]
-
-            # Get the sizes of these bins
-            bin_size = (
-                self.pg
-                .adata.var
-                .reindex(index=sorted_depths.index)
-                ['n_genes']
-            
-            )
-
-            # Calculate the cumulative sum of bin sizes
-            cumsum_bin_size = bin_size.cumsum()
-
-            # Take the depth of the bin which accounts for half of the genes by aggregate
-            median_depth = sorted_depths.loc[
-                cumsum_bin_size > (cumsum_bin_size.max() / 2.)
-            ].min()
-
-            return r / median_depth
+            # Adjusted for sequencing depth - RPKM (reads per kilobase per million reads)
+            # Calculated both with total reads, and with aligned reads
+            self.adata.layers["rpkm_total"] = (
+                self.adata.to_df(layer="rpk").T / (self.adata.obs["genes:tot_reads"] / 1e6)
+            ).T
+            self.adata.layers["rpkm_aligned"] = (
+                self.adata.to_df(layer="rpk").T
+                / (self.adata.obs["genes:aligned_reads"] / 1e6)
+            ).T
 
         def _make_adata(self):
             # Observation (sample) metadata
@@ -1847,22 +1862,37 @@ def _(
 
 
 @app.cell
-def _(
+def define_inspect_metagenome(
+    AnnData,
     List,
     Metagenome,
     Optional,
+    Patch,
+    abund,
+    defaultdict,
     groupby,
-    inspect_metagenome_datasets,
-    make_metagenome,
     mo,
+    np,
     pd,
+    plt,
+    sns,
+    sort_axis,
 ):
     class InspectMetagenome:
         mgs: List[Metagenome]
         datasets_df: pd.DataFrame
+        _rename_specimens: bool
+        _rename_bins: bool    
 
         def __init__(self, mgs: List[Metagenome]):
             self.mgs = mgs
+
+            # Key the metagenomes by the same pangenome, or the same ngs
+            self._mgs_by_pg = defaultdict(list)
+            self._mgs_by_ngs = defaultdict(list)
+            for mg in self.mgs:
+                self._mgs_by_pg[mg.pg.ds.id].append(mg)
+                self._mgs_by_ngs[mg.ngs.id].append(mg)
 
             # Make a table of all of the pangenomes that each metagenome uses
             self.datasets_df = pd.DataFrame([
@@ -1875,14 +1905,82 @@ def _(
                 for mg in self.mgs
             ])
 
+            # Only rename the specimens if there are multiple NGS datasets
+            self._rename_specimens = self.datasets_df["ngs_id"].nunique() > 1
+
+            # Only rename the bins if there are multiple pangenomes
+            self._rename_bins = self.datasets_df["pangenome_id"].nunique() > 1
+
             # Make a combined relative abundance table
             # Group each distinct ngs dataset analyzed with different pangenomes
             # Concatenate each distinct ngs dataset
-            self.relative_abundance = pd.concat(
+            rpkm_aligned = self.make_df(layer="rpkm_aligned")
+            rpkm_total = self.make_df(layer="rpkm_total")
+
+            # Make the combined metadata table, keeping in mind that the obs information
+            # will only be populated when a sample has genes detected for a particular metagenome
+            obs = self.make_obs()
+
+            var = pd.concat(
+                [
+                    same_pg_mgs[0].var(rename=self._rename_bins)
+                    for pg_id, same_pg_mgs in self._mgs_by_pg.items()
+                ],
+                axis=0
+            )
+
+            self.adata = AnnData(
+                rpkm_aligned,
+                obs=obs.reindex(rpkm_aligned.index),
+                var=var.reindex(rpkm_aligned.columns),
+                layers=dict(rpkm_total=rpkm_total)
+            )
+
+        def make_obs(self) -> pd.DataFrame:
+            return pd.concat(
+                [
+                    self.make_obs_per_ngs(list(same_ngs_mgs))
+                    for ngs_id, same_ngs_mgs in groupby(
+                        self.mgs,
+                        lambda mg: mg.ngs.id
+                    )                    
+                ],
+                axis=0
+            )
+
+        def make_obs_per_ngs(self, same_ngs_mgs: List[Metagenome]) -> pd.DataFrame:
+            obs = same_ngs_mgs[0].obs(rename=self._rename_specimens)
+
+            if len(same_ngs_mgs) > 1:
+    
+                for ngs in same_ngs_mgs[1:]:
+                    next_obs = ngs.obs(rename=self._rename_specimens)
+    
+                    if set(next_obs.index.values) > set(obs.index.values):
+                        obs = pd.concat([
+                            obs,
+                            next_obs.reindex(index=set(next_obs.index.values) - set(obs.index.values))
+                        ])
+
+            # Annotate the NGS dataset
+            ngs = same_ngs_mgs[0].ngs
+            obs = obs.assign(
+                ngs_dataset_id=ngs.id,
+                ngs_dataset_name=ngs.name,
+            )
+            return obs
+
+        def make_df(self, layer: str):
+            """Get the abundances from all metagenomes, using a particular layer of data."""
+            return pd.concat(
                 [
                     pd.concat(
                         [
-                            mg.to_df()
+                            mg.to_df(
+                                layer=layer,
+                                rename_specimens=self._rename_specimens,
+                                rename_bins=self._rename_bins
+                            )
                             for mg in same_ngs_mgs
                         ],
                         axis=1
@@ -1895,70 +1993,307 @@ def _(
                 axis=0
             ).fillna(0)
 
-        def args(self):
-            return mo.md("""
-    ### Inspect Pangenome: Heatmap Options
+        def header(self):
+            """Header text."""
 
-     - {top_n_bins}
+            return mo.md(f"""
+    ### Inspect Pangenome Options ({self.adata.shape[0]:,} specimens x {self.adata.shape[1]:,} bins)
+    """)
+
+        def global_args(self):
+            """Top-level args."""
+
+            return mo.md("""
+     - {per_total_or_aligned}
+     - {top_n_bins_abund}
+     - {top_n_bins_var}
      - {include_bins}
      - {filter_specimens_query}
-     - {height}
             """).batch(
-                top_n_bins=mo.ui.number(
-                    label="Show N Bins (Largest # of Genes):",
+                per_total_or_aligned=mo.ui.dropdown(
+                    label="Calculate Sequencing Depth Relative To:",
+                    options=["Pangenome-Aligned Reads", "All Reads"],
+                    value="Pangenome-Aligned Reads"
+                ),
+                top_n_bins_abund=mo.ui.number(
+                    label="Use Most Abundant N Bins:",
                     start=0,
-                    value=40,
+                    value=self.adata.n_vars,
+                    step=1
+                ),
+                top_n_bins_var=mo.ui.number(
+                    label="(and) Use Most Variable N Bins:",
+                    start=0,
+                    value=0,
                     step=1
                 ),
                 include_bins=mo.ui.multiselect(
-                    label="Show Specific Bins:",
+                    label="(and) Use Specific Bins:",
                     value=[],
-                    options=self.relative_abundance.columns.values
+                    options=self.adata.var_names
                 ),
                 filter_specimens_query=mo.ui.text(
                     label="Filter Specimens by Query Expression (optional)",
                     placeholder="colName == 'Group A'"
-                ),
-                height=mo.ui.number(
-                    label="Figure Height",
-                    start=100,
-                    value=800
                 )
             )
 
+        def heatmap_args(self):
+            """Top-level args."""
+
+            return mo.md("""
+    ### Inspect Pangenome: Heatmap Options
+
+     - Show Specimens Labels {show_specimen_labels}
+     - Custom Specimen Label: {label_specimens_by}
+     - Annotate Specimens By: {annot_specimens_by}
+     - Show Pangenome Bin Labels {show_bin_labels}
+     - {height}
+     - {width}
+            """).batch(
+                show_specimen_labels=mo.ui.checkbox(
+                    value=False
+                ),
+                label_specimens_by=mo.ui.dropdown(
+                    options=self.adata.obs.columns.values
+                ),
+                annot_specimens_by=mo.ui.multiselect(
+                    options=self.adata.obs.columns.values,
+                    value=[]
+                ),
+                show_bin_labels=mo.ui.checkbox(
+                    value=True
+                ),
+                height=mo.ui.number(
+                    label="Figure Height",
+                    start=1,
+                    value=8
+                ),
+                width=mo.ui.number(
+                    label="Figure Width",
+                    start=1,
+                    value=8
+                )
+            )
 
         def plot(
             self,
-            top_n_bins: int,
+            per_total_or_aligned: str,
+            top_n_bins_abund: int,
+            top_n_bins_var: int,
             include_bins: List[str],
             filter_specimens_query: Optional[str],
+            show_specimen_labels: bool,
+            label_specimens_by: str,
+            annot_specimens_by: List[str],
+            show_bin_labels: bool,
+            width: int,
             height: int
         ):
-            pass
 
+            # Get the abundances requested by the user
+            if per_total_or_aligned == "Pangenome-Aligned Reads":
+                _abund = self.adata.to_df()
+            else:
+                assert per_total_or_aligned == "All Reads"
+                _abund = self.adata.to_df(layer="rpkm_total")
+
+            # Start a list of the bins to include
+            if top_n_bins_abund == _abund.shape[1] or top_n_bins_var == _abund.shape[1]:
+                _bins_to_plot = _abund.columns.values
+            else:
+                _bins_to_plot = include_bins
+                if top_n_bins_abund is not None and top_n_bins_abund > 0:
+                    _bins_to_plot.extend(
+                        list(
+                            (
+                                _abund.mean()
+                            )
+                            .sort_values(ascending=False)
+                            .head(top_n_bins_abund)
+                            .index.values
+                        )
+                    )
+                if top_n_bins_var is not None and top_n_bins_var > 0:
+                    _bins_to_plot.extend(
+                        list(
+                            (
+                                _abund.std() / _abund.mean()
+                            )
+                            .sort_values(ascending=False)
+                            .head(top_n_bins_var)
+                            .index.values
+                        )
+                    )
+                _bins_to_plot = list(set(_bins_to_plot))
+
+                # If the user specified a query string
+            if filter_specimens_query is not None and len(filter_specimens_query) > 0:
+                try:
+                    filtered_specimens = self.adata.obs.query(filter_specimens_query).index
+                except ValueError as e:
+                    return mo.md(f"Could not evaluate query: {str(e)}")
+                if len(filtered_specimens) == 0:
+                    return mo.md("No specimens match the provided query")
+                if len(filtered_specimens) < 2:
+                    return mo.md("Only a single specimen matches the provided query")
+                _abund = abund.reindex(index=filtered_specimens)
+
+            _abund = _abund.reindex(columns=_bins_to_plot)
+
+            if len(_bins_to_plot) < 2:
+                return mo.md("""Please select multiple bins to plot""")
+
+            specimen_order = sort_axis(_abund)
+            bin_order = sort_axis(_abund.T)
+
+            _abund = _abund.reindex(index=specimen_order, columns=bin_order)
+
+            # TODO - update the specimen labels using the selected column
+
+            # Calculate the log abundance for the color scale
+            lower_bound = _abund.apply(lambda c: c[c > 0].min()).min()
+            log_abund = (
+                _abund
+                .clip(
+                    lower=lower_bound
+                )
+                .apply(np.log10)
+            )
+            # Get the points to make ticks for in the color scale
+            abund_ticks_log = np.arange(np.ceil(np.log10(lower_bound)), np.log10(_abund.max().max()), step=1)
+
+            # Format the text label for each of those ticks
+            ticktext = [
+                (
+                    f"{10**val:,.0f}"
+                    if val >= 0
+                    else f"{10**val}"
+                )
+                for val in abund_ticks_log
+            ]
+
+            # Set up the row annotations
+            if len(annot_specimens_by) > 0:
+                row_colors, row_cmap = make_df_cmap(
+                    self.adata
+                    .obs
+                    .reindex(columns=annot_specimens_by)
+                    .reindex(specimen_order)
+                )
+            else:
+                row_colors = None
+                row_cmap = None
+        
+            fig = sns.clustermap(
+                log_abund,
+                cmap="Blues",
+                yticklabels=(
+                    (
+                        "auto"
+                        if label_specimens_by is None
+                        else self.adata.obs.reindex(specimen_order)[label_specimens_by].values
+                    )
+                    if show_specimen_labels
+                    else False
+                ),
+                xticklabels="auto" if show_bin_labels else False,
+                figsize=(width, height),
+                cbar_pos=(0, 0.5, .05, .3),
+                cbar_kws=dict(
+                    ticks=abund_ticks_log
+                ),
+                row_cluster=False,
+                col_cluster=False,
+                dendrogram_ratio=(0.15, 0.01),
+                row_colors=row_colors
+            )
+            fig.fig.suptitle(f"Relative Sequencing Depth - {per_total_or_aligned}", y=1.05)
+            fig.ax_cbar.set_title("RPKM")
+            fig.ax_cbar.set_yticklabels(ticktext)
+            fig.ax_heatmap.set_ylabel(None)
+
+            if row_cmap is not None:
+                legends = [
+                    fig.ax_row_dendrogram.legend(
+                        [Patch(facecolor=_cmap[name]) for name in _cmap],
+                        _cmap,
+                        title=_label,
+                        bbox_to_anchor=(
+                            1,
+                            1 - (_ix / (len(row_cmap) + 1))
+                        ),
+                        bbox_transform=plt.gcf().transFigure,
+                        loc='upper left'
+                    )
+                    for _ix, (_label, _cmap) in enumerate(row_cmap.items())
+                ]
+                if len(legends) > 1:
+                    for legend in legends[:-1]:
+                        fig.ax_row_dendrogram.add_artist(legend)
+
+            return plt.gca()
+
+
+    def make_df_cmap(df: pd.DataFrame, palette="tab10", **kwargs):
+        """Make a colormap for each column in a DataFrame."""
+
+        cmap = dict()
+        colors_df = dict()
+
+        for cname, cvals in df.items():
+            unique_cvals = cvals.drop_duplicates().sort_values().values
+            cmap[cname] = dict(zip(
+                unique_cvals,
+                sns.color_palette(palette, len(unique_cvals), **kwargs)
+            ))
+            colors_df[cname] = cvals.apply(cmap[cname].get)
+
+        return pd.DataFrame(colors_df), cmap
+
+    return InspectMetagenome, make_df_cmap
+
+
+@app.cell
+def make_inspect_metagenome(
+    InspectMetagenome,
+    inspect_metagenome_datasets,
+    make_metagenome,
+):
     inspect_metagenome = InspectMetagenome([
         make_metagenome(metagenome_dataset)
         for metagenome_dataset in inspect_metagenome_datasets
     ])
-    return InspectMetagenome, inspect_metagenome
+    return (inspect_metagenome,)
 
 
 @app.cell
 def _(inspect_metagenome):
-    inspect_metagenome.relative_abundance
+    inspect_metagenome.header()
     return
 
 
 @app.cell
 def _(inspect_metagenome):
-    inspect_metagenome_args = inspect_metagenome.args()
+    inspect_metagenome_args = inspect_metagenome.global_args()
     inspect_metagenome_args
     return (inspect_metagenome_args,)
 
 
 @app.cell
-def _(inspect_metagenome, inspect_metagenome_args):
-    inspect_metagenome.plot(**inspect_metagenome_args.value)
+def _(inspect_metagenome):
+    inspect_metagenome_heatmap_args = inspect_metagenome.heatmap_args()
+    inspect_metagenome_heatmap_args
+    return (inspect_metagenome_heatmap_args,)
+
+
+@app.cell
+def _(
+    inspect_metagenome,
+    inspect_metagenome_args,
+    inspect_metagenome_heatmap_args,
+):
+    inspect_metagenome.plot(**inspect_metagenome_heatmap_args.value, **inspect_metagenome_args.value)
     return
 
 
@@ -1969,7 +2304,7 @@ def _(mo):
 
 
 @app.cell
-def _(Metagenome, make_metagenome, metagenome_dataset, mo):
+def _(Metagenome, mo):
     class CompareMetagenome:
         mg: Metagenome
 
@@ -1982,20 +2317,20 @@ def _(Metagenome, make_metagenome, metagenome_dataset, mo):
         def plot(self):
             pass
 
-    compare_metagenome = CompareMetagenome(make_metagenome(metagenome_dataset))
-    return CompareMetagenome, compare_metagenome
+    # compare_metagenome = CompareMetagenome(make_metagenome(metagenome_dataset))
+    return (CompareMetagenome,)
 
 
 @app.cell
-def _(compare_metagenome):
-    compare_metagenome_args = compare_metagenome.args()
-    compare_metagenome_args
-    return (compare_metagenome_args,)
+def _():
+    # compare_metagenome_args = compare_metagenome.args()
+    # compare_metagenome_args
+    return
 
 
 @app.cell
-def _(compare_metagenome, compare_metagenome_args):
-    compare_metagenome.plot(**compare_metagenome_args.value)
+def _():
+    # compare_metagenome.plot(**compare_metagenome_args.value)
     return
 
 
