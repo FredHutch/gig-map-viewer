@@ -1868,16 +1868,36 @@ def define_inspect_metagenome(
     Metagenome,
     Optional,
     Patch,
+    copy,
     defaultdict,
     groupby,
+    lru_cache,
     mo,
     np,
     pd,
     plt,
+    px,
     sklearn,
     sns,
     sort_axis,
 ):
+    from hashlib import sha256
+    from pandas.util import hash_pandas_object
+
+
+    class HashableDataFrame(pd.DataFrame):
+        def __init__(self, obj):
+            super().__init__(obj)
+
+        def __hash__(self):
+            hash_value = sha256(hash_pandas_object(self, index=True).values)
+            hash_value = hash(hash_value.hexdigest())
+            return hash_value
+
+        def __eq__(self, other):
+            return self.equals(other)
+
+
     class InspectMetagenome:
         mgs: List[Metagenome]
         datasets_df: pd.DataFrame
@@ -1997,7 +2017,9 @@ def define_inspect_metagenome(
             """Header text."""
 
             return mo.md(f"""
-    ### Inspect Metagenome: Analysis Options ({self.adata.shape[0]:,} specimens x {self.adata.shape[1]:,} bins)
+    ### Inspect Metagenome: Analysis Options
+
+    ({self.adata.shape[0]:,} specimens x {self.adata.shape[1]:,} bins)
     """)
 
         def analysis_args(self):
@@ -2005,8 +2027,6 @@ def define_inspect_metagenome(
 
             return mo.md("""
      - {per_total_or_aligned}
-     - {top_n_bins_abund}
-     - {top_n_bins_var}
      - {include_bins}
      - {filter_specimens_query}
      - {n_clusters}
@@ -2016,29 +2036,17 @@ def define_inspect_metagenome(
                     options=["Pangenome-Aligned Reads", "All Reads"],
                     value="Pangenome-Aligned Reads"
                 ),
-                top_n_bins_abund=mo.ui.number(
-                    label="Use Most Abundant N Bins:",
-                    start=0,
-                    value=self.adata.n_vars,
-                    step=1
-                ),
-                top_n_bins_var=mo.ui.number(
-                    label="(and) Use Most Variable N Bins:",
-                    start=0,
-                    value=0,
-                    step=1
-                ),
                 include_bins=mo.ui.multiselect(
-                    label="(and) Use Specific Bins:",
+                    label="Use Specific Bins (default: all):",
                     value=[],
                     options=self.adata.var_names
                 ),
                 filter_specimens_query=mo.ui.text(
-                    label="Filter Specimens by Query Expression (optional)",
+                    label="Filter Specimens by Query Expression (default: all)",
                     placeholder="colName == 'Group A'"
                 ),
                 n_clusters=mo.ui.number(
-                    label="Number of Clusters:",
+                    label="K-Means Clustering - K:",
                     value=5,
                     step=1,
                     start=2
@@ -2057,8 +2065,6 @@ def define_inspect_metagenome(
             self,
             adata: AnnData,
             per_total_or_aligned: str,
-            top_n_bins_abund: int,
-            top_n_bins_var: int,
             include_bins: List[str],
             filter_specimens_query: Optional[str],
             n_clusters: int,
@@ -2074,36 +2080,13 @@ def define_inspect_metagenome(
                 assert self.per_total_or_aligned == "All Reads"
                 _abund = self.adata.to_df(layer="rpkm_total")
 
-            # Start a list of the bins to include
-            if top_n_bins_abund == _abund.shape[1] or top_n_bins_var == _abund.shape[1]:
-                _bins_to_plot = _abund.columns.values
-            else:
+            # Optionally filter bins
+            if include_bins is not None and len(include_bins) > 0:
                 _bins_to_plot = include_bins
-                if top_n_bins_abund is not None and top_n_bins_abund > 0:
-                    _bins_to_plot.extend(
-                        list(
-                            (
-                                _abund.mean()
-                            )
-                            .sort_values(ascending=False)
-                            .head(top_n_bins_abund)
-                            .index.values
-                        )
-                    )
-                if top_n_bins_var is not None and top_n_bins_var > 0:
-                    _bins_to_plot.extend(
-                        list(
-                            (
-                                _abund.std() / _abund.mean()
-                            )
-                            .sort_values(ascending=False)
-                            .head(top_n_bins_var)
-                            .index.values
-                        )
-                    )
-                _bins_to_plot = list(set(_bins_to_plot))
+            else:
+                _bins_to_plot = _abund.columns.values
  
-                # If the user specified a query string
+            # If the user specified a query string for the specimens
             if filter_specimens_query is not None and len(filter_specimens_query) > 0:
                 try:
                     filtered_specimens = self.adata.obs.query(filter_specimens_query).index
@@ -2177,7 +2160,7 @@ def define_inspect_metagenome(
                 )
             )
 
-        def plot(
+        def heatmap_plot(
             self,
             show_specimen_labels: bool,
             label_specimens_by: str,
@@ -2261,6 +2244,145 @@ def define_inspect_metagenome(
 
             return plt.gca()
 
+        def scatter_args(self):
+            """Top-level args."""
+
+            return mo.md("""
+    ### Inspect Metagenome: Scatter Options
+
+     - Custom Specimen Label: {label_specimens_by}
+     - Color Specimens By: {color_specimens_by}
+     - Hover Data (optional): {hover_data}
+     - {n_dims}
+     - {perplexity}
+     - {height}
+     - {width}
+            """).batch(
+                label_specimens_by=mo.ui.dropdown(
+                    options=self.adata.obs.columns.values
+                ),
+                color_specimens_by=mo.ui.dropdown(
+                    options=(
+                        list(self.adata.obs.columns.values)
+                        +
+                        list(self.adata.var_names)
+                    )
+                ),
+                hover_data=mo.ui.multiselect(
+                    options=self.adata.obs.columns.values,
+                    value=[]
+                ),
+                n_dims=mo.ui.radio(
+                    label="t-SNE - Dimensions:",
+                    options=["2D", "3D"],
+                    value="2D"
+                ),
+                perplexity=mo.ui.number(
+                    label="t-SNE - perplexity:",
+                    start=1.,
+                    value=float(min(30, self.adata.n_obs))
+                ),
+                height=mo.ui.number(
+                    label="Figure Height",
+                    start=1,
+                    value=500
+                ),
+                width=mo.ui.number(
+                    label="Figure Width",
+                    start=1,
+                    value=500
+                )
+            )
+
+        def scatter_plot(
+            self,
+            label_specimens_by: str,
+            color_specimens_by: str,
+            hover_data: list,
+            n_dims: str,
+            perplexity: float,
+            width: int,
+            height: int
+        ):
+
+            # Use the log abundances to perform the t-SNE embedding
+            tsne_coords = copy(run_tsne(
+                HashableDataFrame(self.log_abund),
+                n_components=2 if n_dims == "2D" else 3,
+                perplexity=perplexity,
+                random_state=0
+            ))
+
+            # Optionally assign a color
+            if color_specimens_by is not None:
+                tsne_coords = tsne_coords.assign(**{
+                    color_specimens_by: (
+                        self.adata.obs[color_specimens_by]
+                        if color_specimens_by in self.adata.obs.columns
+                        else
+                        self.log_abund[color_specimens_by]
+                    )
+                })
+
+            # Add any hover data that was specified
+            for cname in hover_data:
+                if cname not in tsne_coords.columns.values:
+                    tsne_coords = tsne_coords.assign(**{
+                        cname: self.adata.obs[cname]
+                    })
+
+            # Optionally assign a label
+            if label_specimens_by is not None and label_specimens_by not in tsne_coords.columns.values:
+                tsne_coords = tsne_coords.assign(**{
+                    label_specimens_by: self.adata.obs[label_specimens_by]
+                })
+            else:
+                label_specimens_by = tsne_coords.index.name
+                tsne_coords.reset_index(inplace=True)
+
+            # Things that are the same for both plot types
+            common_kwargs = dict(
+                data_frame=tsne_coords,
+                x="t-SNE 1",
+                y="t-SNE 2",
+                hover_name=label_specimens_by,
+                hover_data=hover_data,
+                template="simple_white",
+                width=width,
+                height=height
+            )
+            if color_specimens_by is not None:
+                common_kwargs["color"] = color_specimens_by
+
+            # Switch based on the 2D or 3D scatter option
+            if n_dims == "2D":
+                fig = px.scatter(
+                    **common_kwargs
+                )
+            else:
+                fig = px.scatter_3d(
+                    z="t-SNE 3",
+                    **common_kwargs
+                )
+            return fig
+
+
+    @lru_cache
+    def run_tsne(df: HashableDataFrame, n_components: int, perplexity: float, random_state):
+        tsne = sklearn.manifold.TSNE(
+            n_components=n_components,
+            perplexity=perplexity,
+            random_state=random_state
+        )
+        return pd.DataFrame(
+            tsne.fit_transform(df.values),
+            index=df.index,
+            columns = [
+                f"t-SNE {ix+1}"
+                for ix in range(n_components)
+            ]
+        )
+
 
     def run_kmeans_clustering(df: pd.DataFrame, n_clusters: int) -> pd.Series:
         kmeans = sklearn.cluster.KMeans(n_clusters=n_clusters)
@@ -2285,10 +2407,14 @@ def define_inspect_metagenome(
         return pd.DataFrame(colors_df), cmap
 
     return (
+        HashableDataFrame,
         InspectMetagenome,
         InspectMetagenomeAnalysis,
+        hash_pandas_object,
         make_df_cmap,
         run_kmeans_clustering,
+        run_tsne,
+        sha256,
     )
 
 
@@ -2336,7 +2462,20 @@ def _(inspect_metagenome_analysis):
 
 @app.cell
 def _(inspect_metagenome_analysis, inspect_metagenome_heatmap_args):
-    inspect_metagenome_analysis.plot(**inspect_metagenome_heatmap_args.value)
+    inspect_metagenome_analysis.heatmap_plot(**inspect_metagenome_heatmap_args.value)
+    return
+
+
+@app.cell
+def _(inspect_metagenome_analysis):
+    inspect_metagenome_scatter_args = inspect_metagenome_analysis.scatter_args()
+    inspect_metagenome_scatter_args
+    return (inspect_metagenome_scatter_args,)
+
+
+@app.cell
+def _(inspect_metagenome_analysis, inspect_metagenome_scatter_args):
+    inspect_metagenome_analysis.scatter_plot(**inspect_metagenome_scatter_args.value)
     return
 
 
