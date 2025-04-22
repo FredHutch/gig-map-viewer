@@ -359,10 +359,10 @@ def _(mo, pangenome_dataset):
 def _(mo):
     with mo.status.spinner("Loading dependencies"):
         import pandas as pd
-        from scipy import cluster, spatial
+        from scipy import cluster, spatial, stats
         from anndata import AnnData
         import sklearn
-    return AnnData, cluster, pd, sklearn, spatial
+    return AnnData, cluster, pd, sklearn, spatial, stats
 
 
 @app.cell
@@ -1880,6 +1880,7 @@ def define_inspect_metagenome(
     sklearn,
     sns,
     sort_axis,
+    stats,
 ):
     from hashlib import sha256
     from pandas.util import hash_pandas_object
@@ -2120,7 +2121,21 @@ def define_inspect_metagenome(
             self.log_abund = self.log_abund.reindex(index=self.specimen_order, columns=self.bin_order)
 
             # Perform k-means clustering
-            self.adata.obs["specimen_clusters"] = run_kmeans_clustering(self.log_abund, n_clusters)
+            # Rank the bins based on how different they are between those clusters using the kruskal wallis H test
+            self.adata.obs["specimen_clusters"], kw = run_kmeans_clustering(self.log_abund, n_clusters)
+            self.adata.varm["specimen_clusters_kw"] = kw.reindex(index=self.adata.var.index)
+
+        @property
+        def bin_names(self):
+            return list(self.adata.var_names)
+
+        @property
+        def obs_cnames(self):
+            return list(self.adata.obs.columns.values)
+
+        @property
+        def obs_cnames_and_bin_names(self):
+            return self.bin_names + self.obs_cnames
 
         def heatmap_args(self):
             """Top-level args."""
@@ -2139,10 +2154,10 @@ def define_inspect_metagenome(
                     value=False
                 ),
                 label_specimens_by=mo.ui.dropdown(
-                    options=self.adata.obs.columns.values
+                    options=self.obs_cnames
                 ),
                 annot_specimens_by=mo.ui.multiselect(
-                    options=self.adata.obs.columns.values,
+                    options=self.obs_cnames,
                     value=[]
                 ),
                 show_bin_labels=mo.ui.checkbox(
@@ -2259,17 +2274,13 @@ def define_inspect_metagenome(
      - {width}
             """).batch(
                 label_specimens_by=mo.ui.dropdown(
-                    options=self.adata.obs.columns.values
+                    options=self.obs_cnames
                 ),
                 color_specimens_by=mo.ui.dropdown(
-                    options=(
-                        list(self.adata.obs.columns.values)
-                        +
-                        list(self.adata.var_names)
-                    )
+                    options=self.obs_cnames_and_bin_names
                 ),
                 hover_data=mo.ui.multiselect(
-                    options=self.adata.obs.columns.values,
+                    options=self.obs_cnames,
                     value=[]
                 ),
                 n_dims=mo.ui.radio(
@@ -2366,6 +2377,90 @@ def define_inspect_metagenome(
                 )
             return fig
 
+        def cluster_dist_args(self):
+            """User input for comparing values (or annotations) across the specimen clusters."""
+
+            return mo.md("""
+    ### Inspect Metagenomes: Categorical Comparisons
+
+    - {kind}
+    - {x}
+    - {y}
+    - {hue}
+    - {height}
+    - {aspect}
+            """).batch(
+                kind=mo.ui.dropdown(
+                    label="Plot Type:",
+                    value="boxen",
+                    options=[
+                        "boxen",
+                        "box",
+                        "violin",
+                        "strip",
+                        "swarm",
+                        "point",
+                        "bar"
+                    ]
+                ),
+                x=mo.ui.dropdown(
+                    label="X-axis:",
+                    options=self.obs_cnames_and_bin_names,
+                    value="specimen_clusters"
+                ),
+                y=mo.ui.dropdown(
+                    label="Y-axis:",
+                    options=self.obs_cnames_and_bin_names,
+                    value=(
+                        self.adata
+                        .varm["specimen_clusters_kw"]
+                        .dropna()
+                        .sort_values(by="pvalue")
+                        .index.values[0]
+                    )
+                ),
+                hue=mo.ui.dropdown(
+                    label="Hue:",
+                    options=self.obs_cnames_and_bin_names
+                ),
+                height=mo.ui.number(
+                    label="Height:",
+                    value=5.,
+                    start=1.
+                ),
+                aspect=mo.ui.number(
+                    label="Aspect Ratio:",
+                    value=1.,
+                    start=0.1,
+                )
+            )
+
+        def cluster_dist_plot(
+            self,
+            kind: str,
+            x: str,
+            y: str,
+            hue: str,
+            height: float,
+            aspect: float,
+        ):
+            plot_df = pd.concat([self.adata.obs, self.log_abund], axis=1)
+
+            try:
+                fig = sns.catplot(
+                    plot_df,
+                    kind=kind,
+                    x=x,
+                    y=y,
+                    hue=hue,
+                    height=height,
+                    aspect=aspect
+                )
+            except Exception as e:
+                return str(e)
+
+            return plt.gca()
+
 
     @lru_cache
     def run_tsne(df: HashableDataFrame, n_components: int, perplexity: float, random_state):
@@ -2387,7 +2482,28 @@ def define_inspect_metagenome(
     def run_kmeans_clustering(df: pd.DataFrame, n_clusters: int) -> pd.Series:
         kmeans = sklearn.cluster.KMeans(n_clusters=n_clusters)
         labels = kmeans.fit_predict(df.values)
-        return pd.Series(labels, index=df.index).apply(str)
+
+        # Use the Kruskal Wallis H test to rank the features and how much they vary between groups
+        kw = pd.DataFrame([
+            dict(zip(
+                ["statistic", "pvalue"],
+                try_kruskal(
+                    *[
+                        value_group
+                        for _, value_group in col.groupby(labels)
+                    ]
+                )
+            ))
+            for _, col in df.items()
+        ], index=df.columns)
+        return pd.Series(labels, index=df.index).apply(str), kw
+
+
+    def try_kruskal(*samples):
+        try:
+            return stats.kruskal(*samples)
+        except ValueError:
+            return (None, None)
 
 
     def make_df_cmap(df: pd.DataFrame, palette="tab10", **kwargs):
@@ -2415,6 +2531,7 @@ def define_inspect_metagenome(
         run_kmeans_clustering,
         run_tsne,
         sha256,
+        try_kruskal,
     )
 
 
@@ -2476,6 +2593,19 @@ def _(inspect_metagenome_analysis):
 @app.cell
 def _(inspect_metagenome_analysis, inspect_metagenome_scatter_args):
     inspect_metagenome_analysis.scatter_plot(**inspect_metagenome_scatter_args.value)
+    return
+
+
+@app.cell
+def _(inspect_metagenome_analysis):
+    inspect_metagenome_cluster_dist_args = inspect_metagenome_analysis.cluster_dist_args()
+    inspect_metagenome_cluster_dist_args
+    return (inspect_metagenome_cluster_dist_args,)
+
+
+@app.cell
+def _(inspect_metagenome_analysis, inspect_metagenome_cluster_dist_args):
+    inspect_metagenome_analysis.cluster_dist_plot(**inspect_metagenome_cluster_dist_args.value)
     return
 
 
