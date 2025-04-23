@@ -2611,38 +2611,216 @@ def _(inspect_metagenome_analysis, inspect_metagenome_cluster_dist_args):
 
 @app.cell
 def _(mo):
-    mo.md(r"""## Compare Metagenomes""")
+    mo.md(
+        r"""
+        ## Compare Metagenomes
+
+        Perform statistical analysis comparing the relative abundance of different pangenome elements between groups of metagenome specimens.
+        """
+    )
     return
 
 
 @app.cell
-def _(Metagenome, mo):
-    class CompareMetagenome:
-        mg: Metagenome
+def _(AnnData, List, inspect_metagenome_analysis, mo, pd):
+    class CompareMetagenomeTool:
+        """Base class used for all analysis methods."""
+        name: str
+        description: str
 
-        def __init__(self, mg: Metagenome):
-            self.mg = mg
+        log_abund: pd.DataFrame
+        abund: pd.DataFrame
+        adata: AnnData
 
-        def args(self):
-            return mo.md("""""").batch()
+        def __init__(self):
+            self.adata = inspect_metagenome_analysis.adata
+            self.log_abund = inspect_metagenome_analysis.log_abund
+            self.abund = inspect_metagenome_analysis.abund
 
-        def plot(self):
+        def analysis_args(self):
+            return mo.md("").batch()
+
+        def run_analysis(self):
             pass
 
-    # compare_metagenome = CompareMetagenome(make_metagenome(metagenome_dataset))
-    return (CompareMetagenome,)
+        def plot_args(self):
+            return mo.md("").batch()
+
+        def make_plot(self):
+            pass
+
+
+    class CompareMetagenomeKruskalWallis(CompareMetagenomeTool):
+        name = "Compare Two or More Groups: Kruskal-Wallis H Test"
+        description = """Non-parametric test used to identify organisms
+        which are present at different relative abundances between two
+        or more groups.
+
+        Each bin is tested independently, and so there are no issues with
+        correlated measurements. However, any interaction between bins
+        will not be identified.
+        """
+
+        def analysis_args(self):
+            return mo.md(
+                """
+    - {grouping_cname}
+    - {query}
+                """
+            ).batch(
+                query=mo.ui.text(
+                    label="Filter Specimens (optional):",
+                    placeholder="e.g. cname == 'Group A'",
+                    full_width=True
+                ),
+                grouping_cname=mo.ui.dropdown(
+                    label="Compare Groups Defined By:",
+                    options=self.adata.obs.columns.values,
+                    value="specimen_clusters"
+                )
+            )
+
+        def run_analysis(self, query: str, grouping_cname: str):
+            pass
+
+
+    class CompareMetagenomeLogisticRegression(CompareMetagenomeTool):
+        name = "Compare Two Groups: Logistic Regression"
+        description = """Statistical modeling comparing the difference
+        in relative abundance between two groups of samples.
+
+        The results are presented in terms of the log-fold change in relative
+        abundance between the comparator and reference groups of samples.
+
+        Each bin is tested independently, and so there are no issues with
+        correlated measurements. However, any interaction between bins
+        will not be identified.
+        """
+
+        def analysis_args(self):
+            return mo.md(
+                """
+    - {ref_query}
+    - {comp_query}
+                """
+            ).batch(
+                ref_query=mo.ui.text(
+                    label="Reference Group - Query Expression:",
+                    placeholder="e.g. cname == 'Group A'",
+                    value="specimen_cluster == '0'",
+                    full_width=True
+                ),
+                comp_query=mo.ui.text(
+                    label="Comparison Group - Query Expression:",
+                    placeholder="e.g. cname == 'Group B'",
+                    value="specimen_cluster == '1'",
+                    full_width=True
+                )
+            )
+
+        def run_analysis(self, ref_query: str, comp_query: str):
+            if ref_query is None or len(ref_query) == 0:
+                return "Please provide a query expression specifying the reference group"
+            try:
+                ref_group = self.adata.obs.query(ref_query)
+            except ValueError as e:
+                return f"Error processing {ref_query}: {str(e)}"
+            if ref_group.shape[0] == 0:
+                return f"No samples match the query: {ref_query}"
+        
+            if comp_query is None or len(comp_query) == 0:
+                return "Please provide a query expression specifying the comparison group"
+            try:
+                comp_group = self.adata.obs.query(comp_query)
+            except ValueError as e:
+                return f"Error processing {comp_query}: {str(e)}"
+            if comp_group.shape[0] == 0:
+                return f"No samples match the query: {comp_query}"
+
+            # Make sure there is no overlap between the two groups
+            if set(ref_group.index.values) & set(comp_group.index.values):
+                n_overlap = len(set(ref_group.index.values) & set(comp_group.index.values))
+                return f"Error: {n_overlap:,} samples (out of {ref_group.shape[0]:,} and {comp_group.shape[0]:,} respectively) are included in both groups"
+
+
+    class CompareMetagenome:
+        tools = List[CompareMetagenomeTool]
+
+        def __init__(self):
+            self.tools = [
+                CompareMetagenomeKruskalWallis,
+                CompareMetagenomeLogisticRegression
+            ]
+
+        def analysis_type_args(self):
+            return mo.ui.dropdown(
+                label="Analysis Type:",
+                options=[
+                    tool.name
+                    for tool in self.tools                    
+                ],
+                value=self.tools[0].name
+            )
+
+        def make_tool(self, tool_name: str):
+            for tool in self.tools:
+                if tool.name == tool_name:
+                    return tool()
+            raise ValueError(f"No such tool: {tool_name}")
+
+
+    compare_metagenome = CompareMetagenome()
+    return (
+        CompareMetagenome,
+        CompareMetagenomeKruskalWallis,
+        CompareMetagenomeLogisticRegression,
+        CompareMetagenomeTool,
+        compare_metagenome,
+    )
+
+
+@app.cell
+def _(compare_metagenome):
+    compare_metagenome_analysis_type = compare_metagenome.analysis_type_args()
+    compare_metagenome_analysis_type
+    return (compare_metagenome_analysis_type,)
+
+
+@app.cell
+def _(compare_metagenome, compare_metagenome_analysis_type, mo):
+    # Instantiate the tool selected by the user
+    compare_metagenome_tool = compare_metagenome.make_tool(compare_metagenome_analysis_type.value)
+    mo.md(compare_metagenome_tool.description)
+    return (compare_metagenome_tool,)
 
 
 @app.cell
 def _():
-    # compare_metagenome_args = compare_metagenome.args()
-    # compare_metagenome_args
     return
 
 
 @app.cell
-def _():
-    # compare_metagenome.plot(**compare_metagenome_args.value)
+def _(compare_metagenome_tool):
+    compare_metagenome_analysis_args = compare_metagenome_tool.analysis_args()
+    compare_metagenome_analysis_args
+    return (compare_metagenome_analysis_args,)
+
+
+@app.cell
+def _(compare_metagenome_analysis_args, compare_metagenome_tool):
+    compare_metagenome_tool.run_analysis(**compare_metagenome_analysis_args.value)
+    return
+
+
+@app.cell
+def _(compare_metagenome_tool):
+    compare_metagenome_tool_plot_args = compare_metagenome_tool.plot_args()
+    return (compare_metagenome_tool_plot_args,)
+
+
+@app.cell
+def _(compare_metagenome_tool, compare_metagenome_tool_plot_args):
+    compare_metagenome_tool.make_plot(**compare_metagenome_tool_plot_args.value)
     return
 
 
