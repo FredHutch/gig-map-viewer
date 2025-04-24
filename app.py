@@ -1862,6 +1862,27 @@ def define_metagenome_class(
 
 
 @app.cell
+def _(np):
+    def format_log_ticks(min_val: float, max_val: float):
+
+        # Get the points to make ticks for in the color scale
+        abund_ticks_log = np.arange(np.ceil(np.log10(min_val)), np.log10(max_val), step=1)
+
+        # Format the text label for each of those ticks
+        ticktext = [
+            (
+                f"{10**val:,.0f}"
+                if val >= 0
+                else f"{10**val}"
+            )
+            for val in abund_ticks_log
+        ]
+
+        return abund_ticks_log, ticktext
+    return (format_log_ticks,)
+
+
+@app.cell
 def define_inspect_metagenome(
     AnnData,
     List,
@@ -1870,6 +1891,7 @@ def define_inspect_metagenome(
     Patch,
     copy,
     defaultdict,
+    format_log_ticks,
     groupby,
     lru_cache,
     mo,
@@ -2186,17 +2208,7 @@ def define_inspect_metagenome(
         ):
 
             # Get the points to make ticks for in the color scale
-            abund_ticks_log = np.arange(np.ceil(np.log10(self.lower_bound)), np.log10(self.abund.max().max()), step=1)
-
-            # Format the text label for each of those ticks
-            ticktext = [
-                (
-                    f"{10**val:,.0f}"
-                    if val >= 0
-                    else f"{10**val}"
-                )
-                for val in abund_ticks_log
-            ]
+            abund_ticks_log, ticktext = format_log_ticks(self.lower_bound, self.abund.max().max())
 
             # Set up the row annotations
             if len(annot_specimens_by) > 0:
@@ -2622,52 +2634,88 @@ def _(mo):
 
 
 @app.cell
-def _(AnnData, List, inspect_metagenome_analysis, mo, pd):
+def class_comparemetagenometool(AnnData, inspect_metagenome_analysis, mo, pd):
     class CompareMetagenomeTool:
         """Base class used for all analysis methods."""
         name: str
         description: str
 
+        _ready_to_plot: bool
+
         log_abund: pd.DataFrame
         abund: pd.DataFrame
         adata: AnnData
+
+        res: pd.DataFrame
 
         def __init__(self):
             self.adata = inspect_metagenome_analysis.adata
             self.log_abund = inspect_metagenome_analysis.log_abund
             self.abund = inspect_metagenome_analysis.abund
+            self._ready_to_plot = False
 
-        def analysis_args(self):
+        def primary_args(self):
             return mo.md("").batch()
 
-        def run_analysis(self):
-            pass
-
-        def plot_args(self):
+        def secondary_args(self, **kwargs):
             return mo.md("").batch()
 
-        def make_plot(self):
+        def run_analysis(self, **kwargs):
             pass
 
+        def primary_plot_args(self, **kwargs):
+            return mo.md("").batch()
 
-    class CompareMetagenomeKruskalWallis(CompareMetagenomeTool):
-        name = "Compare Two or More Groups: Kruskal-Wallis H Test"
-        description = """Non-parametric test used to identify organisms
-        which are present at different relative abundances between two
-        or more groups.
+        def make_primary_plot(self, **kwargs):
+            pass
 
-        Each bin is tested independently, and so there are no issues with
-        correlated measurements. However, any interaction between bins
-        will not be identified.
+        def secondary_plot_args(self, **kwargs):
+            return mo.md("").batch()
+
+        def make_secondary_plot(self, **kwargs):
+            pass
+
+        def tertiary_plot_args(self, **kwargs):
+            return mo.md("").batch()
+
+        def make_tertiary_plot(self, **kwargs):
+            pass
+
+    return (CompareMetagenomeTool,)
+
+
+@app.cell
+def class_comparemetagenomemultiplegroups(
+    CompareMetagenomeTool,
+    List,
+    format_log_ticks,
+    mo,
+    pd,
+    plt,
+    px,
+    sns,
+    sort_axis,
+    stats,
+):
+    class CompareMetagenomeMultipleGroups(CompareMetagenomeTool):
+        name = "Compare Two or More Groups"
+        description = """Identify organisms which are present at different
+        relative abundances between two or more groups.
         """
 
-        def analysis_args(self):
+        def primary_args(self):
             return mo.md(
                 """
+    - {test}
     - {grouping_cname}
     - {query}
                 """
             ).batch(
+                test=mo.ui.dropdown(
+                    label="Statistical Test",
+                    options=["ANOVA", "Kruskal-Wallis"],
+                    value="ANOVA"
+                ),
                 query=mo.ui.text(
                     label="Filter Specimens (optional):",
                     placeholder="e.g. cname == 'Group A'",
@@ -2680,12 +2728,244 @@ def _(AnnData, List, inspect_metagenome_analysis, mo, pd):
                 )
             )
 
-        def run_analysis(self, query: str, grouping_cname: str):
-            pass
+        def secondary_args(self, grouping_cname: str, query: str, **kwargs):
+            try:
+                self._filtered_obs(query)
+            except ValueError:
+                return mo.md(f"Invalid query syntax: {query}").batch()
+
+            # Get the groups present in the selected column
+            groups = self._filtered_obs(query)[grouping_cname].unique()
+
+            return mo.md("""
+    - {include_groups}
+            """).batch(
+                include_groups=mo.ui.multiselect(
+                    label="Include Groups:",
+                    options=groups,
+                    value=groups
+                )
+            )
+
+        def run_analysis(self, query: str, grouping_cname: str, test: str, include_groups: List[str]):
+            # Make sure that multiple groups were included
+            if not len(include_groups) > 1:
+                return mo.md("Must select multiple groups for analysis")
+
+            # Optionally filter, and get only those groups which were selected
+            obs = self._filtered_obs(query)
+            self._groupings = obs.loc[
+                obs[grouping_cname].isin(include_groups)
+            ][grouping_cname]
+        
+            if test == "Kruskal-Wallis":
+                self.res = self._compare_groups("kruskal")
+            elif test == "ANOVA":
+                self.res = self._compare_groups("f_oneway")
+
+            self._ready_to_plot = True
+
+        def _compare_groups(self, test_name: str):
+            return pd.DataFrame([
+                dict(
+                    bin=bin,
+                    mean_log_rpkm=bin_log_rpkm.mean(),
+                    median_log_rpkm=bin_log_rpkm.median(),
+                    **self._compare_groups_single(bin_log_rpkm, test_name),
+                    **self._group_stats(bin_log_rpkm),
+                )
+                for bin, bin_log_rpkm in self.log_abund.items()
+            ]).sort_values(by="pvalue")
+
+        def _group_stats(self, bin_log_rpkm: pd.Series):
+            return {
+                kw: val
+                for group_name, group_vals in bin_log_rpkm.groupby(self._groupings)
+                for kw, val in {
+                    f"mean_log_rpkm - {group_name}": group_vals.mean(),
+                    f"median_log_rpkm - {group_name}": group_vals.median()
+                }.items()
+            }
+
+        def _compare_groups_single(self, bin_log_rpkm: pd.Series, test_name: str):
+            try:
+                return dict(zip(
+                    ["statistic", "pvalue"],
+                    getattr(stats, test_name)(
+                        *[
+                            vals
+                            for _, vals in bin_log_rpkm.groupby(self._groupings)
+                        ]
+                    )
+                ))
+            except ValueError:
+                return dict(statistic=None, pvalue=None)
+
+        def _filtered_obs(self, query: str):
+            if query is not None and len(query) > 0:
+                return self.adata.obs.query(query)
+            else:
+                return self.adata.obs
+        
+        def make_primary_plot(self, **kwargs):
+            return self.res
+
+        def secondary_plot_args(self, **kwargs):
+            return mo.md("""
+     - {heatmap_show_bins}
+     - {heatmap_metric}
+     - {heatmap_width}
+     - {heatmap_height}
+            """).batch(
+                heatmap_show_bins=mo.ui.multiselect(
+                    label="Show Bins in Heatmap:",
+                    options=self.res['bin'].values,
+                    value=self.res['bin'].head(10).values
+                ),
+                heatmap_metric=mo.ui.dropdown(
+                    label="Heatmap Metric:",
+                    options=["Median", "Mean"],
+                    value="Median"
+                ),
+                heatmap_height=mo.ui.number(
+                    label="Figure Height",
+                    start=1,
+                    value=4
+                ),
+                heatmap_width=mo.ui.number(
+                    label="Figure Width",
+                    start=1,
+                    value=8
+                )
+            )
+
+        def make_secondary_plot(
+            self,
+            heatmap_show_bins: List[str],
+            heatmap_metric: str,
+            heatmap_width: int,
+            heatmap_height: int,
+            **kwargs
+        ):
+
+            cname_prefix = f"{heatmap_metric.lower()}_log_rpkm - "
+            plot_df = (
+                self.res
+                .set_index('bin')
+                .reindex(
+                    index=heatmap_show_bins,
+                    columns=[
+                        cname for cname in self.res.columns.values
+                        if cname.startswith(cname_prefix)
+                    ]
+                )
+                .rename(
+                    columns=lambda cname: cname[len(cname_prefix):]
+                )
+            )
+
+            plot_df = plot_df.reindex(
+                index=sort_axis(plot_df),
+                columns=sort_axis(plot_df.T)
+            )
+
+            abund_ticks_log, ticktext = format_log_ticks(10**plot_df.min().min(), 10**plot_df.max().max())
+
+            fig = sns.clustermap(
+                plot_df,
+                cmap="Blues",
+                figsize=(heatmap_width, heatmap_height),
+                cbar_pos=(0, 0.5, .05, .3),
+                cbar_kws=dict(
+                    ticks=abund_ticks_log
+                ),
+                row_cluster=False,
+                col_cluster=False,
+                dendrogram_ratio=(0.25, 0.01),
+            )
+            fig.fig.suptitle(f"{heatmap_metric} RPKM (log) per Group", y=1.05)
+            fig.ax_cbar.set_title("RPKM")
+            fig.ax_cbar.set_yticklabels(ticktext)
+            return plt.gca()
+
+        def tertiary_plot_args(self, include_groups: List[str], grouping_cname: str, **kwargs):
+            return mo.md("""
+     - {select_single_bin}
+     - {single_bin_group_order}
+     - {xaxis_label}
+     - {single_bin_width}
+     - {single_bin_height}
+            """).batch(
+                select_single_bin=mo.ui.dropdown(
+                    label="Show Single Bin Across Groups:",
+                    options=self.res['bin'].values,
+                    value=self.res['bin'].values[0]
+                ),
+                single_bin_group_order=mo.ui.multiselect(
+                    label="Group Order (deselect and reselect to reorder):",
+                    options=include_groups,
+                    value=include_groups
+                ),
+                xaxis_label=mo.ui.text(
+                    label="X-Axis Label:",
+                    value=grouping_cname
+                ),
+                single_bin_height=mo.ui.number(
+                    label="Figure Height",
+                    start=1,
+                    value=400
+                ),
+                single_bin_width=mo.ui.number(
+                    label="Figure Width",
+                    start=1,
+                    value=600
+                )
+            )
+
+        def make_tertiary_plot(
+            self,
+            grouping_cname: str,
+            select_single_bin: str,
+            single_bin_group_order: List[str],
+            xaxis_label: str,
+            single_bin_width: int,
+            single_bin_height: int,
+            **kwargs
+        ):
+            plot_df = pd.DataFrame(
+                {
+                    grouping_cname: self._groupings,
+                    select_single_bin: self.log_abund[select_single_bin]
+                }
+            ).dropna()
+
+            fig = px.box(
+                plot_df.loc[
+                    plot_df[grouping_cname].isin(single_bin_group_order)
+                ],
+                x=grouping_cname,
+                y=select_single_bin,
+                category_orders={
+                    grouping_cname: single_bin_group_order
+                },
+                template="simple_white",
+                labels={
+                    grouping_cname: xaxis_label
+                },
+                width=single_bin_width,
+                height=single_bin_height
+            )
+            fig.update_xaxes(type="category")
+
+            return fig
+        
+    return (CompareMetagenomeMultipleGroups,)
 
 
-    class CompareMetagenomeLogisticRegression(CompareMetagenomeTool):
-        name = "Compare Two Groups: Logistic Regression"
+@app.cell
+def class_comparemetagenometwogroups(CompareMetagenomeTool, mo):
+    class CompareMetagenomeTwoGroups(CompareMetagenomeTool):
+        name = "Compare Two Groups"
         description = """Statistical modeling comparing the difference
         in relative abundance between two groups of samples.
 
@@ -2697,7 +2977,7 @@ def _(AnnData, List, inspect_metagenome_analysis, mo, pd):
         will not be identified.
         """
 
-        def analysis_args(self):
+        def primary_args(self):
             return mo.md(
                 """
     - {ref_query}
@@ -2741,15 +3021,24 @@ def _(AnnData, List, inspect_metagenome_analysis, mo, pd):
             if set(ref_group.index.values) & set(comp_group.index.values):
                 n_overlap = len(set(ref_group.index.values) & set(comp_group.index.values))
                 return f"Error: {n_overlap:,} samples (out of {ref_group.shape[0]:,} and {comp_group.shape[0]:,} respectively) are included in both groups"
+    return (CompareMetagenomeTwoGroups,)
 
 
+@app.cell
+def _(
+    CompareMetagenomeMultipleGroups,
+    CompareMetagenomeTool,
+    CompareMetagenomeTwoGroups,
+    List,
+    mo,
+):
     class CompareMetagenome:
         tools = List[CompareMetagenomeTool]
 
         def __init__(self):
             self.tools = [
-                CompareMetagenomeKruskalWallis,
-                CompareMetagenomeLogisticRegression
+                CompareMetagenomeMultipleGroups,
+                CompareMetagenomeTwoGroups
             ]
 
         def analysis_type_args(self):
@@ -2770,13 +3059,7 @@ def _(AnnData, List, inspect_metagenome_analysis, mo, pd):
 
 
     compare_metagenome = CompareMetagenome()
-    return (
-        CompareMetagenome,
-        CompareMetagenomeKruskalWallis,
-        CompareMetagenomeLogisticRegression,
-        CompareMetagenomeTool,
-        compare_metagenome,
-    )
+    return CompareMetagenome, compare_metagenome
 
 
 @app.cell
@@ -2801,26 +3084,129 @@ def _():
 
 @app.cell
 def _(compare_metagenome_tool):
-    compare_metagenome_analysis_args = compare_metagenome_tool.analysis_args()
-    compare_metagenome_analysis_args
-    return (compare_metagenome_analysis_args,)
+    compare_metagenome_primary_args = compare_metagenome_tool.primary_args()
+    compare_metagenome_primary_args
+    return (compare_metagenome_primary_args,)
 
 
 @app.cell
-def _(compare_metagenome_analysis_args, compare_metagenome_tool):
-    compare_metagenome_tool.run_analysis(**compare_metagenome_analysis_args.value)
+def _(compare_metagenome_primary_args, compare_metagenome_tool):
+    compare_metagenome_secondary_args = compare_metagenome_tool.secondary_args(**compare_metagenome_primary_args.value)
+    compare_metagenome_secondary_args
+    return (compare_metagenome_secondary_args,)
+
+
+@app.cell
+def _(
+    compare_metagenome_primary_args,
+    compare_metagenome_secondary_args,
+    compare_metagenome_tool,
+):
+    compare_metagenome_tool.run_analysis(
+        **compare_metagenome_primary_args.value,
+        **compare_metagenome_secondary_args.value
+    )
     return
 
 
 @app.cell
-def _(compare_metagenome_tool):
-    compare_metagenome_tool_plot_args = compare_metagenome_tool.plot_args()
-    return (compare_metagenome_tool_plot_args,)
+def _(
+    compare_metagenome_primary_args,
+    compare_metagenome_secondary_args,
+    compare_metagenome_tool,
+):
+    compare_metagenome_tool_primary_plot_args = compare_metagenome_tool.primary_plot_args(
+        **compare_metagenome_primary_args.value,
+        **compare_metagenome_secondary_args.value
+    )
+    compare_metagenome_tool_primary_plot_args
+    return (compare_metagenome_tool_primary_plot_args,)
 
 
 @app.cell
-def _(compare_metagenome_tool, compare_metagenome_tool_plot_args):
-    compare_metagenome_tool.make_plot(**compare_metagenome_tool_plot_args.value)
+def _(
+    compare_metagenome_primary_args,
+    compare_metagenome_secondary_args,
+    compare_metagenome_tool,
+    compare_metagenome_tool_primary_plot_args,
+    mo,
+):
+    mo.stop(compare_metagenome_tool._ready_to_plot is False)
+    compare_metagenome_tool.make_primary_plot(
+        **compare_metagenome_tool_primary_plot_args.value,
+        **compare_metagenome_primary_args.value,
+        **compare_metagenome_secondary_args.value
+    )
+    return
+
+
+@app.cell
+def _(
+    compare_metagenome_primary_args,
+    compare_metagenome_secondary_args,
+    compare_metagenome_tool,
+    compare_metagenome_tool_primary_plot_args,
+):
+    compare_metagenome_tool_secondary_plot_args = compare_metagenome_tool.secondary_plot_args(
+        **compare_metagenome_tool_primary_plot_args.value,
+        **compare_metagenome_primary_args.value,
+        **compare_metagenome_secondary_args.value
+    )
+    compare_metagenome_tool_secondary_plot_args
+    return (compare_metagenome_tool_secondary_plot_args,)
+
+
+@app.cell
+def _(
+    compare_metagenome_primary_args,
+    compare_metagenome_secondary_args,
+    compare_metagenome_tool,
+    compare_metagenome_tool_primary_plot_args,
+    compare_metagenome_tool_secondary_plot_args,
+):
+    compare_metagenome_tool.make_secondary_plot(
+        **compare_metagenome_tool_primary_plot_args.value,
+        **compare_metagenome_tool_secondary_plot_args.value,
+        **compare_metagenome_primary_args.value,
+        **compare_metagenome_secondary_args.value
+    )
+    return
+
+
+@app.cell
+def _(
+    compare_metagenome_primary_args,
+    compare_metagenome_secondary_args,
+    compare_metagenome_tool,
+    compare_metagenome_tool_primary_plot_args,
+    compare_metagenome_tool_secondary_plot_args,
+):
+    compare_metagenome_tool_tertiary_plot_args = compare_metagenome_tool.tertiary_plot_args(
+        **compare_metagenome_tool_primary_plot_args.value,
+        **compare_metagenome_tool_secondary_plot_args.value,
+        **compare_metagenome_primary_args.value,
+        **compare_metagenome_secondary_args.value
+    )
+    compare_metagenome_tool_tertiary_plot_args
+    return (compare_metagenome_tool_tertiary_plot_args,)
+
+
+@app.cell
+def _(
+    compare_metagenome_primary_args,
+    compare_metagenome_secondary_args,
+    compare_metagenome_tool,
+    compare_metagenome_tool_primary_plot_args,
+    compare_metagenome_tool_secondary_plot_args,
+    compare_metagenome_tool_tertiary_plot_args,
+):
+    compare_metagenome_tool.make_tertiary_plot(
+        **compare_metagenome_tool_primary_plot_args.value,
+        **compare_metagenome_tool_secondary_plot_args.value,
+        **compare_metagenome_tool_tertiary_plot_args.value,
+        **compare_metagenome_primary_args.value,
+        **compare_metagenome_secondary_args.value
+    )
     return
 
 
