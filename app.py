@@ -836,6 +836,7 @@ def _(
     - Annotation Offset (y): {label_offset_y}
     - Omit Genomes: {omit_genomes}
     - Include Specific Bins: {include_bins}
+    - {size_max}
     - {height}
             """).batch(
                 annotate_by=mo.ui.dropdown(
@@ -871,6 +872,11 @@ def _(
                     label="Figure Height",
                     start=100,
                     value=600
+                ),
+                size_max=mo.ui.number(
+                    label="Point Size:",
+                    start=1,
+                    value=20
                 )
             )
 
@@ -882,7 +888,8 @@ def _(
             include_bins: list,
             height: int,
             label_offset_x: float,
-            label_offset_y: float
+            label_offset_y: float,
+            size_max: int
         ):
             """
             Show a scatter plot where each point is a genome.
@@ -962,7 +969,8 @@ def _(
                     hover_name=annotate_by,
                     template="simple_white",
                     opacity=1,
-                    labels=dict(bin="Gene Bin")
+                    labels=dict(bin="Gene Bin"),
+                    size_max=size_max
                 )
                 fig.add_scatter(
                     x=self.genome_coords[:, 0] + label_offset_x,
@@ -2389,11 +2397,147 @@ def define_inspect_metagenome(
                 )
             return fig
 
-        def cluster_dist_args(self):
-            """User input for comparing values (or annotations) across the specimen clusters."""
+        def cluster_args(self):
+            """User input for comparing the distribution of specimen annotations (e.g. clusters vs. anything)."""
+            return mo.md("""
+    ### Inspect Metagenomes: Compare Specimen Annotations
+
+    Plot the distribution of specimens across different annotation groups, for example
+    comparing treatment vs. control specimens between the clusters assigned by unsupervised
+    k-means based on organism abundances.
+
+     - {cat1}
+     - {cat2}
+        """).batch(
+                cat1=mo.ui.dropdown(
+                    label="Annotation 1:",
+                    options=self.obs_cnames,
+                    value="specimen_clusters"
+                ),
+                cat2=mo.ui.dropdown(
+                    label="Annotation 2:",
+                    options=self.obs_cnames
+                )
+            )
+
+        def cluster_secondary_args(self, cat1: str, cat2: str):
+            cat1_options = self.adata.obs[cat1].unique() if cat1 is not None else []
+            cat2_options = self.adata.obs[cat2].unique() if cat2 is not None else []
 
             return mo.md("""
-    ### Inspect Metagenomes: Categorical Comparisons
+     - {cat1_groups}
+     - {cat2_groups}
+     - {norm}
+     - {barmode}
+     - {height}
+     - {width}
+        """).batch(
+                cat1_groups=mo.ui.multiselect(
+                    label=f"Include Groups from {cat1}",
+                    options=cat1_options,
+                    value=cat1_options
+                ),
+                cat2_groups=mo.ui.multiselect(
+                    label=f"Include Groups from {cat2}",
+                    options=cat2_options,
+                    value=cat2_options
+                ),
+                norm=mo.ui.dropdown(
+                    label="Display Values",
+                    options=[
+                        "Number of Specimens",
+                        f"Percent of Specimens per {cat1} Group",
+                        f"Percent of Specimens per {cat2} Group"
+                    ],
+                    value="Number of Specimens"
+                ),
+                barmode=mo.ui.radio(
+                    label="Bar Mode:",
+                    options=["stack", "group"],
+                    value="group"
+                ),
+                height=mo.ui.number(
+                    label="Figure Height",
+                    start=1,
+                    value=500
+                ),
+                width=mo.ui.number(
+                    label="Figure Width",
+                    start=1,
+                    value=500
+                )
+            )
+
+        def cluster_plot(
+            self,
+            cat1: str,
+            cat1_groups: List[str],
+            cat2: str,
+            cat2_groups: List[str],
+            norm: str,
+            barmode: str,
+            height: int,
+            width: int
+        ):
+            if cat2 is None:
+                return mo.md("Please select a category to compare.")
+            if cat2 == cat1:
+                return mo.md("Please select two different categories to compare.")
+            if len(cat1_groups) < 2:
+                return mo.md(f"Please select more than 1 group from {cat1}")
+            if len(cat2_groups) < 2:
+                return mo.md(f"Please select more than 1 group from {cat2}")
+        
+            # Get the contingency table
+            ct = pd.crosstab(
+                self.adata.obs[cat1],
+                self.adata.obs[cat2]
+            ).reindex(
+                columns=cat2_groups,
+                index=cat1_groups
+            )
+
+            chi2_res = stats.chi2_contingency(ct.values)
+            pvalue = (
+                (
+                    f"{chi2_res.pvalue:.2E}"
+                    if chi2_res.pvalue < 0.001 else
+                    f"{chi2_res.pvalue:.3}"
+                )
+                if chi2_res.pvalue < 0.01
+                else f"{chi2_res.pvalue:.2}"
+            )
+
+            # Get the values to plot
+            if norm == f"Percent of Specimens per {cat1} Group":
+                ct = ct.apply(lambda r: r / r.sum(), axis=1)
+            elif norm == f"Percent of Specimens per {cat2} Group":
+                ct = ct.apply(lambda r: r / r.sum(), axis=0)
+        
+            plot_df = (
+                ct
+                .reset_index()
+                .melt(id_vars=cat1)
+            )
+
+            fig = px.bar(
+                data_frame=plot_df,
+                x=cat1,
+                y="value",
+                color=cat2,
+                template="simple_white",
+                barmode=barmode,
+                title=f"Chi2 p-value: {pvalue}"
+            )
+            return fig
+
+        def cluster_dist_args(self):
+            """User input for comparing bin abundances across any specimen annotation (e.g. clusters)."""
+
+            return mo.md("""
+    ### Inspect Metagenomes: Compare Bin Abundances
+
+    Plot the relative abundance of any bin, comparing across any grouping of specimens (e.g. k-means clusters).
 
     - {kind}
     - {x}
@@ -2417,12 +2561,12 @@ def define_inspect_metagenome(
                 ),
                 x=mo.ui.dropdown(
                     label="X-axis:",
-                    options=self.obs_cnames_and_bin_names,
+                    options=self.obs_cnames,
                     value="specimen_clusters"
                 ),
                 y=mo.ui.dropdown(
                     label="Y-axis:",
-                    options=self.obs_cnames_and_bin_names,
+                    options=self.bin_names,
                     value=(
                         self.adata
                         .varm["specimen_clusters_kw"]
@@ -2433,7 +2577,7 @@ def define_inspect_metagenome(
                 ),
                 hue=mo.ui.dropdown(
                     label="Hue:",
-                    options=self.obs_cnames_and_bin_names
+                    options=self.obs_cnames
                 ),
                 height=mo.ui.number(
                     label="Height:",
@@ -2592,6 +2736,33 @@ def _(inspect_metagenome_analysis):
 @app.cell
 def _(inspect_metagenome_analysis, inspect_metagenome_heatmap_args):
     inspect_metagenome_analysis.heatmap_plot(**inspect_metagenome_heatmap_args.value)
+    return
+
+
+@app.cell
+def _(inspect_metagenome_analysis):
+    inspect_metagenome_cluster_args = inspect_metagenome_analysis.cluster_args()
+    inspect_metagenome_cluster_args
+    return (inspect_metagenome_cluster_args,)
+
+
+@app.cell
+def _(inspect_metagenome_analysis, inspect_metagenome_cluster_args):
+    inspect_metagenome_cluster_secondary_args = inspect_metagenome_analysis.cluster_secondary_args(**inspect_metagenome_cluster_args.value)
+    inspect_metagenome_cluster_secondary_args
+    return (inspect_metagenome_cluster_secondary_args,)
+
+
+@app.cell
+def _(
+    inspect_metagenome_analysis,
+    inspect_metagenome_cluster_args,
+    inspect_metagenome_cluster_secondary_args,
+):
+    inspect_metagenome_analysis.cluster_plot(
+        **inspect_metagenome_cluster_args.value,
+        **inspect_metagenome_cluster_secondary_args.value
+    )
     return
 
 
