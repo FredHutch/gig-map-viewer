@@ -1,7 +1,4 @@
-on:
-  push:
-    branches: 
-    - main
+on: push
 
 jobs:
     build:
@@ -25,21 +22,3 @@ jobs:
               uses: actions/upload-pages-artifact@v3
               with:
                   path: static
-
-    deploy:
-        needs: build
-        runs-on: ubuntu-latest
-        environment:
-            name: github-pages
-            url: ${{ steps.deployment.outputs.page_url }}
-
-        permissions:
-            pages: write
-            id-token: write
-
-        steps:
-            - name: 🌐 Deploy to GitHub Pages
-              id: deployment
-              uses: actions/deploy-pages@v4
-              with:
-                  artifact_name: github-pages
