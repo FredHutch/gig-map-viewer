@@ -2127,7 +2127,7 @@ def define_inspect_metagenome(
                     return mo.md("No specimens match the provided query")
                 if len(filtered_specimens) < 2:
                     return mo.md("Only a single specimen matches the provided query")
-                _abund = self.abund.reindex(index=filtered_specimens)
+                _abund = _abund.reindex(index=filtered_specimens)
 
             self.abund = _abund.reindex(columns=_bins_to_plot)
 
@@ -2422,8 +2422,8 @@ def define_inspect_metagenome(
             )
 
         def cluster_secondary_args(self, cat1: str, cat2: str):
-            cat1_options = self.adata.obs[cat1].unique() if cat1 is not None else []
-            cat2_options = self.adata.obs[cat2].unique() if cat2 is not None else []
+            cat1_options = self.adata.obs[cat1].dropna().unique() if cat1 is not None else []
+            cat2_options = self.adata.obs[cat2].dropna().unique() if cat2 is not None else []
 
             return mo.md("""
      - {cat1_groups}
