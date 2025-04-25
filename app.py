@@ -187,7 +187,7 @@ def _(mo):
 
 
 @app.cell
-def _(domain_to_name, mo, query_params, tenants_by_name):
+def select_tenant(domain_to_name, mo, query_params, tenants_by_name):
     # Let the user select which tenant to log in to (using displayName)
     domain_ui = mo.ui.dropdown(
         options=tenants_by_name,
@@ -200,7 +200,7 @@ def _(domain_to_name, mo, query_params, tenants_by_name):
 
 
 @app.cell
-def _(DataPortalLogin, domain_ui, get_client, mo):
+def get_client(DataPortalLogin, domain_ui, get_client, mo):
     # If the user is not yet logged in, and a domain is selected, then give the user instructions for logging in
     # The configuration of this cell and the two below it serve the function of:
     #   1. Showing the user the login instructions if they have selected a Cirro domain
@@ -220,7 +220,7 @@ def _(DataPortalLogin, domain_ui, get_client, mo):
 
 
 @app.cell
-def _(cirro_login, set_client):
+def set_client(cirro_login, set_client):
     # Once the user logs in, set the state for the client object
     set_client(cirro_login.await_completion())
     return
@@ -365,7 +365,7 @@ def _(mo):
     return AnnData, cluster, pd, sklearn, spatial, stats
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(
     AnnData,
     DataPortalDataset,
@@ -607,11 +607,10 @@ def _(mo):
         import seaborn as sns
         import matplotlib.pyplot as plt
         from matplotlib.patches import Patch
-
     return Patch, make_subplots, np, plt, px, sns
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(
     DataPortalDataset,
     Pangenome,
@@ -1112,7 +1111,7 @@ def _(
     return (compare_pangenomes_datasets,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(
     DataPortalDataset,
     List,
@@ -1231,7 +1230,8 @@ def _(
 
 
 @app.cell
-def _(ComparePangenomes, compare_pangenomes_datasets):
+def _(ComparePangenomes, compare_pangenomes_datasets, mo):
+    mo.stop(len(compare_pangenomes_datasets) < 2)
     compare_pangenomes = ComparePangenomes(compare_pangenomes_datasets)
     return (compare_pangenomes,)
 
@@ -1284,7 +1284,7 @@ def _(client, gene_bin_dataset_ui, mo, project_ui):
     return (gene_bin_dataset,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(DataPortalDataset, Pangenome, make_pangenome, mo, query_params):
     class InspectGeneBin:
         pg: Pangenome
@@ -1403,7 +1403,7 @@ def _(client, compare_gene_bins_dataset_ui, mo, project_ui):
     return (compare_gene_bins_dataset,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(
     DataPortalDataset,
     Pangenome,
@@ -1720,7 +1720,7 @@ def _(inspect_metagenome_datasets, mo):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def define_metagenome_class(
     AnnData,
     DataPortalDataset,
@@ -2003,10 +2003,10 @@ def define_inspect_metagenome(
             obs = same_ngs_mgs[0].obs(rename=self._rename_specimens)
 
             if len(same_ngs_mgs) > 1:
-    
+
                 for ngs in same_ngs_mgs[1:]:
                     next_obs = ngs.obs(rename=self._rename_specimens)
-    
+
                     if set(next_obs.index.values) > set(obs.index.values):
                         obs = pd.concat([
                             obs,
@@ -2116,7 +2116,7 @@ def define_inspect_metagenome(
                 _bins_to_plot = include_bins
             else:
                 _bins_to_plot = _abund.columns.values
- 
+
             # If the user specified a query string for the specimens
             if filter_specimens_query is not None and len(filter_specimens_query) > 0:
                 try:
@@ -2229,7 +2229,7 @@ def define_inspect_metagenome(
             else:
                 row_colors = None
                 row_cmap = None
-        
+
             fig = sns.clustermap(
                 self.log_abund,
                 cmap="Blues",
@@ -2311,7 +2311,8 @@ def define_inspect_metagenome(
                 perplexity=mo.ui.number(
                     label="t-SNE - perplexity:",
                     start=1.,
-                    value=float(min(30, self.adata.n_obs))
+                    value=float(min(30, self.adata.n_obs-1)),
+                    stop=self.adata.n_obs
                 ),
                 height=mo.ui.number(
                     label="Figure Height",
@@ -2487,7 +2488,7 @@ def define_inspect_metagenome(
                 return mo.md(f"Please select more than 1 group from {cat1}")
             if len(cat2_groups) < 2:
                 return mo.md(f"Please select more than 1 group from {cat2}")
-        
+
             # Get the contingency table
             ct = pd.crosstab(
                 self.adata.obs[cat1],
@@ -2513,7 +2514,7 @@ def define_inspect_metagenome(
                 ct = ct.apply(lambda r: r / r.sum(), axis=1)
             elif norm == f"Percent of Specimens per {cat2} Group":
                 ct = ct.apply(lambda r: r / r.sum(), axis=0)
-        
+
             plot_df = (
                 ct
                 .reset_index()
@@ -2677,7 +2678,6 @@ def define_inspect_metagenome(
             colors_df[cname] = cvals.apply(cmap[cname].get)
 
         return pd.DataFrame(colors_df), cmap
-
     return (
         HashableDataFrame,
         InspectMetagenome,
@@ -2747,7 +2747,18 @@ def _(inspect_metagenome_analysis):
 
 
 @app.cell
-def _(inspect_metagenome_analysis, inspect_metagenome_cluster_args):
+def _(inspect_metagenome_cluster_args, mo):
+    (
+        mo.md("Please select two categories to compare")
+        if inspect_metagenome_cluster_args.value["cat1"] is None or inspect_metagenome_cluster_args.value["cat2"] is None
+        else None
+    )
+    return
+
+
+@app.cell
+def _(inspect_metagenome_analysis, inspect_metagenome_cluster_args, mo):
+    mo.stop(inspect_metagenome_cluster_args.value["cat1"] is None or inspect_metagenome_cluster_args.value["cat2"] is None)
     inspect_metagenome_cluster_secondary_args = inspect_metagenome_analysis.cluster_secondary_args(**inspect_metagenome_cluster_args.value)
     inspect_metagenome_cluster_secondary_args
     return (inspect_metagenome_cluster_secondary_args,)
@@ -2851,7 +2862,6 @@ def class_comparemetagenometool(AnnData, inspect_metagenome_analysis, mo, pd):
 
         def make_tertiary_plot(self, **kwargs):
             pass
-
     return (CompareMetagenomeTool,)
 
 
@@ -2928,7 +2938,7 @@ def class_comparemetagenomemultiplegroups(
             self._groupings = obs.loc[
                 obs[grouping_cname].isin(include_groups)
             ][grouping_cname]
-        
+
             if test == "Kruskal-Wallis":
                 self.res = self._compare_groups("kruskal")
             elif test == "ANOVA":
@@ -2977,7 +2987,7 @@ def class_comparemetagenomemultiplegroups(
                 return self.adata.obs.query(query)
             else:
                 return self.adata.obs
-        
+
         def make_primary_plot(self, **kwargs):
             return self.res
 
@@ -3129,7 +3139,6 @@ def class_comparemetagenomemultiplegroups(
             fig.update_xaxes(type="category")
 
             return fig
-        
     return (CompareMetagenomeMultipleGroups,)
 
 
@@ -3178,7 +3187,7 @@ def class_comparemetagenometwogroups(CompareMetagenomeTool, mo):
                 return f"Error processing {ref_query}: {str(e)}"
             if ref_group.shape[0] == 0:
                 return f"No samples match the query: {ref_query}"
-        
+
             if comp_query is None or len(comp_query) == 0:
                 return "Please provide a query expression specifying the comparison group"
             try:
