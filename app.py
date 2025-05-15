@@ -81,12 +81,12 @@ async def _(micropip, mo, running_in_wasm):
             micropip.uninstall("httpx")
             await micropip.install("httpx==0.26.0")
             await micropip.install("urllib3==2.3.0")
-            await micropip.install("botocore==1.36.23")
+            await micropip.install("botocore==1.37.3")
             await micropip.install("jmespath==1.0.1")
             await micropip.install("s3transfer==0.11.3")
-            await micropip.install("boto3==1.36.23")
-            await micropip.install("aiobotocore==2.20.0")
-            await micropip.install("cirro[pyodide]==1.2.16")
+            await micropip.install("boto3==1.37.3")
+            await micropip.install("aiobotocore==2.22.0")
+            await micropip.install("cirro[pyodide]==1.5.0")
 
         from io import StringIO, BytesIO
         from queue import Queue
@@ -365,6 +365,22 @@ def _(mo):
     return AnnData, cluster, pd, sklearn, spatial, stats
 
 
+@app.cell
+def _(client, lru_cache, mo):
+    @lru_cache
+    def read_csv_cached(
+        project_id: str,
+        dataset_id: str,
+        filepath: str,
+        **kwargs
+    ):
+        ds = client.get_dataset(project_id, dataset_id)
+        with mo.status.spinner(f"Reading File: {filepath} ({ds.name})"):
+            return ds.list_files().get_by_id(filepath).read_csv(**kwargs)
+
+    return (read_csv_cached,)
+
+
 @app.cell(hide_code=True)
 def _(
     AnnData,
@@ -372,11 +388,11 @@ def _(
     Dict,
     List,
     cluster,
-    lru_cache,
     mo,
     np,
     pd,
     query_params,
+    read_csv_cached,
     spatial,
 ):
     # Define an object with all of the information for a pangenome
@@ -587,11 +603,15 @@ def _(
             )
 
         def read_csv(self, fp: str, **kwargs):
-            return self.ds.list_files().get_by_id(fp).read_csv(**kwargs)
+            return read_csv_cached(
+                self.ds.project_id,
+                self.ds.id,
+                fp,
+                **kwargs
+            )
 
 
     # Cache the creation of pangenome objects
-    @lru_cache
     def make_pangenome(ds: DataPortalDataset, min_prop: float):
         with mo.status.spinner("Loading data..."):
             return Pangenome(ds, min_prop)
@@ -1728,12 +1748,12 @@ def define_metagenome_class(
     List,
     Pangenome,
     cluster,
-    lru_cache,
     mo,
     np,
     pangenome_datasets,
     pd,
     query_params,
+    read_csv_cached,
 ):
     class Metagenome:
         """
@@ -1857,12 +1877,15 @@ def define_metagenome_class(
             )
 
         def read_csv(self, fp: str, **kwargs):
-            with mo.status.spinner(f"Reading File: {fp} ({self.ds.name})"):
-                return self.ds.list_files().get_by_id(fp).read_csv(**kwargs)
+            return read_csv_cached(
+                self.ds.project_id,
+                self.ds.id,
+                fp,
+                **kwargs
+            )
 
 
     # Cache the creation of pangenome objects
-    @lru_cache
     def make_metagenome(ds: DataPortalDataset):
         with mo.status.spinner("Loading data..."):
             return Metagenome(ds)
