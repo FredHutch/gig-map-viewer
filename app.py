@@ -2188,7 +2188,7 @@ def define_inspect_metagenome(
 
         @property
         def obs_cnames_and_bin_names(self):
-            return self.bin_names + self.obs_cnames
+            return self.obs_cnames + self.bin_names
 
         def heatmap_args(self):
             """Top-level args."""
@@ -2858,6 +2858,9 @@ def class_comparemetagenometool(AnnData, inspect_metagenome_analysis, mo, pd):
             self.log_abund = inspect_metagenome_analysis.log_abund
             self.abund = inspect_metagenome_analysis.abund
             self._ready_to_plot = False
+            self.obs_cnames = inspect_metagenome_analysis.obs_cnames
+            self.lower_bound = inspect_metagenome_analysis.lower_bound
+            self.per_total_or_aligned = inspect_metagenome_analysis.per_total_or_aligned
 
         def primary_args(self):
             return mo.md("").batch()
@@ -2892,7 +2895,9 @@ def class_comparemetagenometool(AnnData, inspect_metagenome_analysis, mo, pd):
 def class_comparemetagenomemultiplegroups(
     CompareMetagenomeTool,
     List,
+    Patch,
     format_log_ticks,
+    make_df_cmap,
     mo,
     pd,
     plt,
@@ -3014,30 +3019,41 @@ def class_comparemetagenomemultiplegroups(
         def make_primary_plot(self, **kwargs):
             return self.res
 
-        def secondary_plot_args(self, **kwargs):
+        def secondary_plot_args(self,grouping_cname: str, **kwargs):
+
             return mo.md("""
-     - {heatmap_show_bins}
-     - {heatmap_metric}
-     - {heatmap_width}
-     - {heatmap_height}
+    ### Compare Metagenomes: Heatmap Options
+
+     - Show Bins in Heatmap: {heatmap_show_bins}
+     - Show Specimens Labels {heatmap_show_specimen_labels}
+     - Custom Specimen Label: {heatmap_label_specimens_by}
+     - Annotate Specimens By: {heatmap_annot_specimens_by}
+     - Show Pangenome Bin Labels {heatmap_show_bin_labels}
+     - Figure Height: {heatmap_height}
+     - Figure Width: {heatmap_width}
             """).batch(
                 heatmap_show_bins=mo.ui.multiselect(
-                    label="Show Bins in Heatmap:",
                     options=self.res['bin'].values,
-                    value=self.res['bin'].head(10).values
+                    value=self.res['bin'].head(20).values
                 ),
-                heatmap_metric=mo.ui.dropdown(
-                    label="Heatmap Metric:",
-                    options=["Median", "Mean"],
-                    value="Median"
+                heatmap_show_specimen_labels=mo.ui.checkbox(
+                    value=False
+                ),
+                heatmap_label_specimens_by=mo.ui.dropdown(
+                    options=self.obs_cnames
+                ),
+                heatmap_annot_specimens_by=mo.ui.multiselect(
+                    options=self.obs_cnames,
+                    value=[grouping_cname]
+                ),
+                heatmap_show_bin_labels=mo.ui.checkbox(
+                    value=True
                 ),
                 heatmap_height=mo.ui.number(
-                    label="Figure Height",
                     start=1,
-                    value=4
+                    value=8
                 ),
                 heatmap_width=mo.ui.number(
-                    label="Figure Width",
                     start=1,
                     value=8
                 )
@@ -3046,38 +3062,69 @@ def class_comparemetagenomemultiplegroups(
         def make_secondary_plot(
             self,
             heatmap_show_bins: List[str],
-            heatmap_metric: str,
+            heatmap_show_specimen_labels: bool,
+            heatmap_label_specimens_by: str,
+            heatmap_annot_specimens_by: List[str],
+            heatmap_show_bin_labels: bool,
             heatmap_width: int,
             heatmap_height: int,
+            query: str,
+            include_groups: List[str],
+            grouping_cname: str,
             **kwargs
         ):
 
-            cname_prefix = f"{heatmap_metric.lower()}_log_rpkm - "
-            plot_df = (
-                self.res
-                .set_index('bin')
-                .reindex(
-                    index=heatmap_show_bins,
-                    columns=[
-                        cname for cname in self.res.columns.values
-                        if cname.startswith(cname_prefix)
-                    ]
-                )
-                .rename(
-                    columns=lambda cname: cname[len(cname_prefix):]
-                )
+            # Optionally filter, and get only those groups which were selected
+            obs = self._filtered_obs(query)
+            obs = obs.loc[obs[grouping_cname].isin(include_groups)]
+
+            # Only use abundances from the selected features
+            abund = self.abund.reindex(columns=heatmap_show_bins, index=obs.index)
+            log_abund = self.log_abund.reindex(columns=heatmap_show_bins, index=obs.index)
+
+            # Sort the specimens based on those abundances only
+            specimen_order = sort_axis(
+                log_abund.dropna(how="all", axis=1),
+                metric="euclidean",
+                method="ward"
+            )
+            bin_order = sort_axis(
+                log_abund.dropna(how="all", axis=1).T,
+                metric="euclidean",
+                method="ward"
+            )
+            obs = obs.reindex(index=specimen_order)
+            abund = abund.reindex(index=specimen_order, columns=bin_order)
+            log_abund = log_abund.reindex(index=specimen_order, columns=bin_order)
+
+            # Get the points to make ticks for in the color scale
+            abund_ticks_log, ticktext = format_log_ticks(
+                abund.apply(lambda c: c[c > 0].min()).min(),
+                abund.max().max()
             )
 
-            plot_df = plot_df.reindex(
-                index=sort_axis(plot_df),
-                columns=sort_axis(plot_df.T)
-            )
-
-            abund_ticks_log, ticktext = format_log_ticks(10**plot_df.min().min(), 10**plot_df.max().max())
+            # Set up the row annotations
+            if len(heatmap_annot_specimens_by) > 0:
+                row_colors, row_cmap = make_df_cmap(
+                    obs.reindex(columns=heatmap_annot_specimens_by)
+                )
+            else:
+                row_colors = None
+                row_cmap = None
 
             fig = sns.clustermap(
-                plot_df,
+                log_abund,
                 cmap="Blues",
+                yticklabels=(
+                    (
+                        "auto"
+                        if heatmap_label_specimens_by is None
+                        else obs[heatmap_label_specimens_by].values
+                    )
+                    if heatmap_show_specimen_labels
+                    else False
+                ),
+                xticklabels="auto" if heatmap_show_bin_labels else False,
                 figsize=(heatmap_width, heatmap_height),
                 cbar_pos=(0, 0.5, .05, .3),
                 cbar_kws=dict(
@@ -3085,12 +3132,35 @@ def class_comparemetagenomemultiplegroups(
                 ),
                 row_cluster=False,
                 col_cluster=False,
-                dendrogram_ratio=(0.25, 0.01),
+                dendrogram_ratio=(0.15, 0.01),
+                row_colors=row_colors
             )
-            fig.fig.suptitle(f"{heatmap_metric} RPKM (log) per Group", y=1.05)
+            fig.fig.suptitle(f"Relative Sequencing Depth - {self.per_total_or_aligned}", y=1.05)
             fig.ax_cbar.set_title("RPKM")
             fig.ax_cbar.set_yticklabels(ticktext)
+            fig.ax_heatmap.set_ylabel(None)
+
+            if row_cmap is not None:
+                legends = [
+                    fig.ax_row_dendrogram.legend(
+                        [Patch(facecolor=_cmap[name]) for name in _cmap],
+                        _cmap,
+                        title=_label,
+                        bbox_to_anchor=(
+                            1,
+                            1 - (_ix / (len(row_cmap) + 1))
+                        ),
+                        bbox_transform=plt.gcf().transFigure,
+                        loc='upper left'
+                    )
+                    for _ix, (_label, _cmap) in enumerate(row_cmap.items())
+                ]
+                if len(legends) > 1:
+                    for legend in legends[:-1]:
+                        fig.ax_row_dendrogram.add_artist(legend)
+
             return plt.gca()
+
 
         def tertiary_plot_args(self, include_groups: List[str], grouping_cname: str, **kwargs):
             return mo.md("""
