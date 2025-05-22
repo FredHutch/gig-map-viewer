@@ -1061,6 +1061,26 @@ def _(inspect_pangenome, inspect_pangenome_heatmap_args):
 
 
 @app.cell
+def _(inspect_pangenome, mo):
+    mo.download(
+        inspect_pangenome.pg.adata.var.to_csv(),
+        label="Pangenome Bin Summary Table",
+        filename=f"{inspect_pangenome.pg.ds.name} - Bin Summary Table.csv"
+    )
+    return
+
+
+@app.cell
+def _(inspect_pangenome, mo):
+    mo.download(
+        inspect_pangenome.pg.adata.obs.to_csv(),
+        label="Pangenome Genome Summary Table",
+        filename=f"{inspect_pangenome.pg.ds.name} - Genome Summary Table.csv"
+    )
+    return
+
+
+@app.cell
 def _(inspect_pangenome):
     inspect_pangenome_plot_scatter_args = inspect_pangenome.plot_scatter_args()
     inspect_pangenome_plot_scatter_args
