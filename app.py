@@ -668,6 +668,8 @@ def _(
 
      - {top_n_bins}
      - {include_bins}
+     - {top_n_genomes}
+     - {include_genomes}
      - {height}
             """).batch(
                 top_n_bins=mo.ui.number(
@@ -681,6 +683,17 @@ def _(
                     value=[],
                     options=self.pg.adata.var_names
                 ),
+                top_n_genomes=mo.ui.number(
+                    label="Show N Genomes (Largest # of Genes):",
+                    start=0,
+                    value=200,
+                    step=1
+                ),
+                include_genomes=mo.ui.multiselect(
+                    label="Show Specific Genomes:",
+                    value=[],
+                    options=self.pg.adata.obs_names
+                ),
                 height=mo.ui.number(
                     label="Figure Height",
                     start=100,
@@ -688,7 +701,14 @@ def _(
                 )
             )
 
-        def plot_heatmap(self, top_n_bins: int, height: int, include_bins: list):
+        def plot_heatmap(
+            self,
+            top_n_bins: int,
+            include_bins: list,
+            top_n_genomes: int,
+            include_genomes: list,
+            height: int,
+        ):
             """Make a heatmap showing which bins are present in which genomes."""
 
             # First get the top bins selected based on bin size
@@ -703,10 +723,29 @@ def _(
 
             if len(bins_to_plot) < 2:
                 return mo.md("""Please select multiple bins to plot""")
+        
+            # Next get the top genomes selected based on genome size
+            if top_n_genomes is not None and top_n_genomes > 0:
+                genomes_to_plot = list(
+                    self.n_genes_per_genome
+                    .sum(axis=1)
+                    .sort_values(ascending=False)
+                    .head(top_n_genomes)
+                    .index.values
+                )
+            else:
+                genomes_to_plot = []
+
+            for genome in include_genomes:
+                if genome not in genomes_to_plot:
+                    genomes_to_plot.append(genome)
+
+            if len(genomes_to_plot) < 2:
+                return mo.md("""Please select multiple genomes to plot""")
 
             present = (
                 self.pg.adata
-                [:, bins_to_plot]
+                [genomes_to_plot, bins_to_plot]
                 .to_df(layer="present")
             )
 
