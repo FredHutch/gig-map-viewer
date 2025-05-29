@@ -1421,6 +1421,22 @@ def _(DataPortalDataset, Pangenome, make_pangenome, mo, query_params):
                 gene_df,
                 genome_df.reindex(columns=genome_columns)
             ])
+
+        def display_bin_layout(self, bin_id, **kwargs):
+            # Show the layout of the bin as an iFrame
+            try:
+                html = (
+                    self.pg
+                    .ds
+                    .list_files()
+                    .get_by_name(f"data/bin_pangenome/layout/{bin_id}.html")
+                    .read()
+                )
+            except Exception as e:
+                return mo.md(f"No gene layout available for {bin_id}")
+            return mo.iframe(html)
+            # layout_file = self.pg.ds.list_files().get_by_name(f"data/bin_pangenome/layout/{bin_id}.html")
+            # return layout_file
     return (InspectGeneBin,)
 
 
@@ -1446,6 +1462,12 @@ def _():
 @app.cell
 def _(display_bin_args, inspect_gene_bin):
     inspect_gene_bin.display_bin(**display_bin_args.value)
+    return
+
+
+@app.cell
+def _(display_bin_args, inspect_gene_bin):
+    inspect_gene_bin.display_bin_layout(**display_bin_args.value)
     return
 
 
