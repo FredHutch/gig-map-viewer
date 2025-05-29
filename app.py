@@ -1469,9 +1469,13 @@ def _(DataPortalDataset, Pangenome, make_pangenome, mo, query_params):
                 )
             except Exception as e:
                 return mo.md(f"No gene layout available for {bin_id}")
-            return mo.iframe(html)
-            # layout_file = self.pg.ds.list_files().get_by_name(f"data/bin_pangenome/layout/{bin_id}.html")
-            # return layout_file
+            return mo.download(
+                html,
+                label="Download gene map",
+                filename=f"{self.pg.ds.name} {bin_id} Layout.html",
+                mimetype="text/html"
+            )
+
     return (InspectGeneBin,)
 
 
