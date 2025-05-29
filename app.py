@@ -377,7 +377,6 @@ def _(client, lru_cache, mo):
         ds = client.get_dataset(project_id, dataset_id)
         with mo.status.spinner(f"Reading File: {filepath} ({ds.name})"):
             return ds.list_files().get_by_id(filepath).read_csv(**kwargs)
-
     return (read_csv_cached,)
 
 
@@ -723,7 +722,7 @@ def _(
 
             if len(bins_to_plot) < 2:
                 return mo.md("""Please select multiple bins to plot""")
-        
+
             # Next get the top genomes selected based on genome size
             if top_n_genomes is not None and top_n_genomes > 0:
                 genomes_to_plot = list(
@@ -889,10 +888,11 @@ def _(
     ### Inspect Pangenome: Genome Map
 
     - Show N Bins: {n_bins}
+    - {top_n_genomes}
+    - {include_genomes}
     - Annotate Genomes By: {annotate_by}
     - Annotation Offset (x): {label_offset_x}
     - Annotation Offset (y): {label_offset_y}
-    - Omit Genomes: {omit_genomes}
     - Include Specific Bins: {include_bins}
     - {size_max}
     - {height}
@@ -918,9 +918,16 @@ def _(
                     step=1,
                     value=10
                 ),
-                omit_genomes=mo.ui.multiselect(
-                    options=self.pg.adata.obs_names,
-                    value=[]
+                top_n_genomes=mo.ui.number(
+                    label="Show N Genomes (Largest # of Genes):",
+                    start=0,
+                    value=200,
+                    step=1
+                ),
+                include_genomes=mo.ui.multiselect(
+                    label="Show Specific Genomes:",
+                    value=[],
+                    options=self.pg.adata.obs_names
                 ),
                 include_bins=mo.ui.multiselect(
                     options=self.pg.adata.var_names,
@@ -942,7 +949,8 @@ def _(
             self,
             annotate_by: str,
             n_bins: int,
-            omit_genomes: list,
+            top_n_genomes: int,
+            include_genomes: list,
             include_bins: list,
             height: int,
             label_offset_x: float,
@@ -967,9 +975,28 @@ def _(
                     if _bin not in bins_to_plot:
                         bins_to_plot.append(_bin)
 
+                # Next get the top genomes selected based on genome size
+                if top_n_genomes is not None and top_n_genomes > 0:
+                    genomes_to_plot = list(
+                        self.n_genes_per_genome
+                        .sum(axis=1)
+                        .sort_values(ascending=False)
+                        .head(top_n_genomes)
+                        .index.values
+                    )
+                else:
+                    genomes_to_plot = []
+    
+                for genome in include_genomes:
+                    if genome not in genomes_to_plot:
+                        genomes_to_plot.append(genome)
+
                 # Drop all of the unselected bins, and add an "Other" column
                 n_genes_per_genome = pd.concat([
-                    self.n_genes_per_genome.reindex(columns=bins_to_plot),
+                    self.n_genes_per_genome.reindex(
+                        columns=bins_to_plot,
+                        index=genomes_to_plot,
+                    ),
                     pd.DataFrame(dict(Other=self.n_genes_per_genome.drop(columns=bins_to_plot).sum(axis=1)))
                 ], axis=1)
 
@@ -1005,8 +1032,9 @@ def _(
                         text=genome_label[genome]
                     )
                     for genome, genome_coord in zip(self.pg.adata.obs_names, self.genome_coords)
+                    if genome in genomes_to_plot
                     for bin in point_size_per_genome.columns.values
-                    if n_genes_per_genome.loc[genome, bin] > 0 and genome not in omit_genomes
+                    if n_genes_per_genome.loc[genome, bin] > 0
                 ]).sort_values(by="point_size", ascending=False)
 
                 # Add the genome metadata
@@ -1030,7 +1058,7 @@ def _(
                     labels=dict(bin="Gene Bin"),
                     size_max=size_max
                 )
-                fig.add_scatter(
+                text_df = pd.DataFrame(dict(
                     x=self.genome_coords[:, 0] + label_offset_x,
                     y=self.genome_coords[:, 1] + label_offset_y,
                     text=[
@@ -1041,6 +1069,13 @@ def _(
                         )
                         for genome in self.pg.adata.obs_names
                     ],
+                    genome=self.pg.adata.obs_names
+                ))
+                text_df = text_df.loc[text_df["genome"].isin(genomes_to_plot)]
+                fig.add_scatter(
+                    x=text_df["x"],
+                    y=text_df["y"],
+                    text=text_df["text"],
                     mode="text",
                     legendgroup="Annotation",
                     legendgrouptitle=dict(text="Annotation"),
@@ -1973,7 +2008,7 @@ def define_metagenome_class(
     return Metagenome, make_metagenome
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(np):
     def format_log_ticks(min_val: float, max_val: float):
 
@@ -1994,7 +2029,7 @@ def _(np):
     return (format_log_ticks,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def define_inspect_metagenome(
     AnnData,
     List,
