@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.11.17"
+__generated_with = "0.13.15"
 app = marimo.App(width="medium", app_title="Pangenome Viewer ")
 
 
@@ -31,17 +31,17 @@ def _(mo):
 def _(mo):
     mo.md(
         r"""
-        # Pangenome Viewer (gig-map)
+    # Pangenome Viewer (gig-map)
 
-        The [gig-map (for "genes-in-genomes map")](https://github.com/FredHutch/gig-map/wiki) tool
-        is used to analyze collections of genomes ("pan-genomes") according to which genes are shared
-        among different groups of genomes.
-        Genes are organized into **bins** -- groups of genes which are all generally found in the same genomes.
+    The [gig-map (for "genes-in-genomes map")](https://github.com/FredHutch/gig-map/wiki) tool
+    is used to analyze collections of genomes ("pan-genomes") according to which genes are shared
+    among different groups of genomes.
+    Genes are organized into **bins** -- groups of genes which are all generally found in the same genomes.
 
-        Each bin represents a group of genes which is either (a) preserved together within a lineage, or (b)
-        consistently transferred together between lineages.
-        Biologically, these tend to be species/genus core genomes, operons, genomic islands, plasmids, bacteriophages, etc.
-        """
+    Each bin represents a group of genes which is either (a) preserved together within a lineage, or (b)
+    consistently transferred together between lineages.
+    Biologically, these tend to be species/genus core genomes, operons, genomic islands, plasmids, bacteriophages, etc.
+    """
     )
     return
 
@@ -63,7 +63,7 @@ def _():
     else:
         micropip = None
         running_in_wasm = False
-    return micropip, running_in_wasm, sys
+    return micropip, running_in_wasm
 
 
 @app.cell
@@ -79,56 +79,42 @@ async def _(micropip, mo, running_in_wasm):
             await micropip.install("ssl")
             micropip.uninstall("urllib3")
             micropip.uninstall("httpx")
-            await micropip.install("httpx==0.26.0")
             await micropip.install("urllib3==2.3.0")
+            micropip.uninstall("requests")
+            await micropip.install("requests==2.32.3")
+            await micropip.install("httpx==0.26.0")
             await micropip.install("botocore==1.37.3")
             await micropip.install("jmespath==1.0.1")
             await micropip.install("s3transfer==0.11.3")
             await micropip.install("boto3==1.37.3")
             await micropip.install("aiobotocore==2.22.0")
-            await micropip.install("cirro[pyodide]==1.5.0")
+            await micropip.install("cirro[pyodide]==1.5.3")
 
-        from io import StringIO, BytesIO
-        from queue import Queue
-        from time import sleep
-        from typing import Dict, Optional, List, Iterable
+        from typing import Dict, Optional, List
         from functools import lru_cache
         from collections import defaultdict
         from itertools import groupby
-        import base64
-        from urllib.parse import quote_plus
         from copy import copy
 
         from cirro import DataPortalLogin, DataPortalDataset
-        from cirro.services.file import FileService
-        from cirro.sdk.file import DataPortalFile
         from cirro.config import list_tenants
 
         # A patch to the Cirro client library is applied when running in WASM
         if running_in_wasm:
             from cirro.helpers import pyodide_patch_all
             pyodide_patch_all()
+
     return (
-        BytesIO,
         DataPortalDataset,
-        DataPortalFile,
         DataPortalLogin,
         Dict,
-        FileService,
-        Iterable,
         List,
         Optional,
-        Queue,
-        StringIO,
-        base64,
         copy,
         defaultdict,
         groupby,
         list_tenants,
         lru_cache,
-        pyodide_patch_all,
-        quote_plus,
-        sleep,
     )
 
 
