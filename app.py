@@ -88,7 +88,7 @@ async def _(micropip, mo, running_in_wasm):
             await micropip.install("s3transfer==0.11.3")
             await micropip.install("boto3==1.37.3")
             await micropip.install("aiobotocore==2.22.0")
-            await micropip.install("cirro[pyodide]==1.5.3")
+            await micropip.install("cirro[pyodide]==1.5.4")
 
         from typing import Dict, Optional, List
         from functools import lru_cache
