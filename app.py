@@ -156,7 +156,7 @@ def _(list_tenants):
 
     def name_to_domain(name):
         return tenants_by_name.get(name, {}).get("domain")
-    return domain_to_name, name_to_domain, tenants_by_domain, tenants_by_name
+    return domain_to_name, tenants_by_name
 
 
 @app.cell
@@ -202,7 +202,7 @@ def get_client(DataPortalLogin, domain_ui, get_client, mo):
 
     mo.stop(cirro_login is None)
     cirro_login_ui
-    return cirro_login, cirro_login_ui
+    return (cirro_login,)
 
 
 @app.cell
@@ -2937,10 +2937,10 @@ def _(inspect_metagenome_analysis, inspect_metagenome_cluster_dist_args):
 def _(mo):
     mo.md(
         r"""
-        ## Compare Metagenomes
+    ## Compare Metagenomes
 
-        Perform statistical analysis comparing the relative abundance of different pangenome elements between groups of metagenome specimens.
-        """
+    Perform statistical analysis comparing the relative abundance of different pangenome elements between groups of metagenome specimens.
+    """
     )
     return
 
@@ -3014,10 +3014,19 @@ def class_comparemetagenomemultiplegroups(
     stats,
 ):
     class CompareMetagenomeMultipleGroups(CompareMetagenomeTool):
-        name = "Compare Two or More Groups"
-        description = """Identify organisms which are present at different
-        relative abundances between two or more groups.
+        name = "Compare Groups - Test Each Organism"
+        description = """
+        Test each organism individually for differences in abundance between groups.
+
+        Can use either the ANOVA (parametric) or Kruskal-Wallis H (non-parametric) tests.
+
+        Does not account for any interaction or correlation between organisms.
+
+        Results are presented in terms of a single p-value for each organism which
+        indicates whether there is a difference between any of the groups.
         """
+        _mean_log_rpkm_prefix = "mean_log_rpkm - "
+        _median_log_rpkm_prefix = "median_log_rpkm - "
 
         def primary_args(self):
             return mo.md(
@@ -3082,7 +3091,8 @@ def class_comparemetagenomemultiplegroups(
             self._ready_to_plot = True
 
         def _compare_groups(self, test_name: str):
-            return pd.DataFrame([
+            # Compute the results
+            df = pd.DataFrame([
                 dict(
                     bin=bin,
                     mean_log_rpkm=bin_log_rpkm.mean(),
@@ -3093,13 +3103,24 @@ def class_comparemetagenomemultiplegroups(
                 for bin, bin_log_rpkm in self.log_abund.items()
             ]).sort_values(by="pvalue")
 
+            # Calculate the log2 fold difference between every pair of groups
+            df = df.assign(**{
+                f"log2_fold_difference - {cname1[len(self._mean_log_rpkm_prefix):]} / {cname2[len(self._mean_log_rpkm_prefix):]}": df[cname1] - df[cname2]
+                for cname1 in df.columns.values
+                if cname1.startswith(self._mean_log_rpkm_prefix)
+                for cname2 in df.columns
+                if cname2.startswith(self._mean_log_rpkm_prefix)
+                if cname1 != cname2
+            })
+            return df
+
         def _group_stats(self, bin_log_rpkm: pd.Series):
             return {
                 kw: val
                 for group_name, group_vals in bin_log_rpkm.groupby(self._groupings)
                 for kw, val in {
-                    f"mean_log_rpkm - {group_name}": group_vals.mean(),
-                    f"median_log_rpkm - {group_name}": group_vals.median()
+                    self._mean_log_rpkm_prefix + str(group_name): group_vals.mean(),
+                    self._median_log_rpkm_prefix + str(group_name): group_vals.median()
                 }.items()
             }
 
