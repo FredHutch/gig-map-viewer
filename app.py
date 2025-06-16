@@ -1567,8 +1567,8 @@ def _(
                     )
                     ,
                     value=(
-                        "assemblyInfo_biosample_description_organism_organismName"
-                        if "assemblyInfo_biosample_description_organism_organismName" in self.pg.adata.obs_keys()
+                        "averageNucleotideIdentity_bestAniMatch_organismName"
+                        if "averageNucleotideIdentity_bestAniMatch_organismName" in self.pg.adata.obs_keys()
                         else 'None'
                     )
                 ),
