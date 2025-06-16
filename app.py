@@ -2995,6 +2995,13 @@ def class_comparemetagenometool(AnnData, inspect_metagenome_analysis, mo, pd):
 
         def make_tertiary_plot(self, **kwargs):
             pass
+
+        def _filtered_obs(self, query: str):
+            if query is not None and len(query) > 0:
+                return self.adata.obs.query(query)
+            else:
+                return self.adata.obs
+
     return (CompareMetagenomeTool,)
 
 
@@ -3017,11 +3024,8 @@ def class_comparemetagenomemultiplegroups(
         name = "Compare Groups - Test Each Organism"
         description = """
         Test each organism individually for differences in abundance between groups.
-
         Can use either the ANOVA (parametric) or Kruskal-Wallis H (non-parametric) tests.
-
         Does not account for any interaction or correlation between organisms.
-
         Results are presented in terms of a single p-value for each organism which
         indicates whether there is a difference between any of the groups.
         """
@@ -3072,7 +3076,13 @@ def class_comparemetagenomemultiplegroups(
                 )
             )
 
-        def run_analysis(self, query: str, grouping_cname: str, test: str, include_groups: List[str]):
+        def run_analysis(
+            self,
+            query: str,
+            grouping_cname: str,
+            test: str,
+            include_groups: List[str]
+        ):
             # Make sure that multiple groups were included
             if not len(include_groups) > 1:
                 return mo.md("Must select multiple groups for analysis")
@@ -3137,12 +3147,6 @@ def class_comparemetagenomemultiplegroups(
                 ))
             except ValueError:
                 return dict(statistic=None, pvalue=None)
-
-        def _filtered_obs(self, query: str):
-            if query is not None and len(query) > 0:
-                return self.adata.obs.query(query)
-            else:
-                return self.adata.obs
 
         def make_primary_plot(self, **kwargs):
             return self.res
@@ -3364,72 +3368,222 @@ def class_comparemetagenomemultiplegroups(
 
 
 @app.cell
-def class_comparemetagenometwogroups(CompareMetagenomeTool, mo):
-    class CompareMetagenomeTwoGroups(CompareMetagenomeTool):
-        name = "Compare Two Groups"
-        description = """Statistical modeling comparing the difference
-        in relative abundance between two groups of samples.
+def _(mo):
+    with mo.status.spinner("Loading dependencies"):
+        from sklearn import ensemble
+        from sklearn.model_selection import train_test_split
+        from sklearn.metrics import confusion_matrix
+        from sklearn.preprocessing import OrdinalEncoder
+    return OrdinalEncoder, confusion_matrix, ensemble, train_test_split
 
-        The results are presented in terms of the log-fold change in relative
-        abundance between the comparator and reference groups of samples.
 
-        Each bin is tested independently, and so there are no issues with
-        correlated measurements. However, any interaction between bins
-        will not be identified.
+@app.cell
+def class_comparemetagenometwogroups(
+    CompareMetagenomeTool,
+    List,
+    OrdinalEncoder,
+    confusion_matrix,
+    ensemble,
+    mo,
+    pd,
+    px,
+    train_test_split,
+):
+    class CompareMetagenomeClassifyGroupsML(CompareMetagenomeTool):
+        name = "Machine Learning – Classify Groups"
+        description = """Using the scikit-learn library, build and test
+        a machine learning classifier to predict the indicated labels.
+        Testing is performed on a randomly selected subset of the data,
+        preserving the group balance of the total dataset.
+
+        Outputs will indicate the importance of each organism in the
+        model, as well as the predictive accuracy and confusion matrix.
         """
+
+        _options=[
+            fname
+            for fname in dir(ensemble)
+            if fname.endswith("Classifier") and fname not in ["VotingClassifier", "StackingClassifier"]
+        ]
 
         def primary_args(self):
             return mo.md(
                 """
-    - {ref_query}
-    - {comp_query}
+    - {classifier}
+    - {training_prop}
+    - {query}
+    - {grouping_cname}
                 """
             ).batch(
-                ref_query=mo.ui.text(
-                    label="Reference Group - Query Expression:",
+                classifier=mo.ui.dropdown(
+                    label="Classifier:",
+                    options=self._options,
+                    value="RandomForestClassifier"
+                ),
+                training_prop=mo.ui.number(
+                    label="Training Proportion:",
+                    start=0.1,
+                    stop=0.9,
+                    step=0.01,
+                    value=0.5
+                ),
+                query=mo.ui.text(
+                    label="Filter Specimens (optional):",
                     placeholder="e.g. cname == 'Group A'",
-                    value="specimen_cluster == '0'",
                     full_width=True
                 ),
-                comp_query=mo.ui.text(
-                    label="Comparison Group - Query Expression:",
-                    placeholder="e.g. cname == 'Group B'",
-                    value="specimen_cluster == '1'",
-                    full_width=True
+                grouping_cname=mo.ui.dropdown(
+                    label="Compare Groups Defined By:",
+                    options=self.adata.obs.columns.values,
+                    value="specimen_clusters"
                 )
             )
 
-        def run_analysis(self, ref_query: str, comp_query: str):
-            if ref_query is None or len(ref_query) == 0:
-                return "Please provide a query expression specifying the reference group"
+        def secondary_args(self, grouping_cname: str, query: str, **kwargs):
             try:
-                ref_group = self.adata.obs.query(ref_query)
-            except ValueError as e:
-                return f"Error processing {ref_query}: {str(e)}"
-            if ref_group.shape[0] == 0:
-                return f"No samples match the query: {ref_query}"
+                self._filtered_obs(query)
+            except ValueError:
+                return mo.md(f"Invalid query syntax: {query}").batch()
 
-            if comp_query is None or len(comp_query) == 0:
-                return "Please provide a query expression specifying the comparison group"
-            try:
-                comp_group = self.adata.obs.query(comp_query)
-            except ValueError as e:
-                return f"Error processing {comp_query}: {str(e)}"
-            if comp_group.shape[0] == 0:
-                return f"No samples match the query: {comp_query}"
+            # Get the groups present in the selected column
+            groups = self._filtered_obs(query)[grouping_cname].unique()
 
-            # Make sure there is no overlap between the two groups
-            if set(ref_group.index.values) & set(comp_group.index.values):
-                n_overlap = len(set(ref_group.index.values) & set(comp_group.index.values))
-                return f"Error: {n_overlap:,} samples (out of {ref_group.shape[0]:,} and {comp_group.shape[0]:,} respectively) are included in both groups"
-    return (CompareMetagenomeTwoGroups,)
+            return mo.md("""
+    - {include_groups}
+            """).batch(
+                include_groups=mo.ui.multiselect(
+                    label="Include Groups:",
+                    options=groups,
+                    value=groups
+                )
+            )
+
+        def run_analysis(
+            self,
+            query: str,
+            grouping_cname: str,
+            include_groups: List[str],
+            classifier: str,
+            training_prop: float
+        ):
+            # Make sure that multiple groups were included
+            if not len(include_groups) > 1:
+                return mo.md("Must select multiple groups for analysis")
+
+            # Optionally filter, and get only those groups which were selected
+            obs = self._filtered_obs(query)
+            self._groupings = obs.loc[
+                obs[grouping_cname].isin(include_groups),
+                [grouping_cname]
+            ]
+
+            # Encode the groups as numeric values for sklearn to work with
+            self.onc = OrdinalEncoder()
+            self.y = self.onc.fit_transform(self._groupings)
+
+            # Encode the abundances as numeric
+            self.X = self.log_abund.reindex(index=self._groupings.index).apply(pd.to_numeric)
+
+            # Instantiate the ML
+            self.model = getattr(ensemble, classifier)()
+
+            # Get the training and testing sets
+            self.X_train, self.X_test, self.y_train, self.y_test = train_test_split(
+                self.X,
+                self.y,
+                train_size=training_prop,
+                stratify=self.y
+            )
+
+            # Fit the model
+            self.model.fit(self.X_train, self.y_train)
+
+            # Make predictions
+            self.pred_test = self.model.predict(self.X_test)
+            self.pred_proba_test = [
+                proba_arr[int(pred_ix)]
+                for proba_arr, pred_ix in zip(
+                    self.model.predict_proba(self.X_test),
+                    self.pred_test
+                )
+            ]
+
+            # Make a DataFrame with all of the prediction information
+            self.pred_df = pd.DataFrame(dict(
+                truth=self.onc.inverse_transform(self.y_test)[:, 0],
+                prediction=self.onc.inverse_transform(pd.DataFrame(self.pred_test))[:, 0],
+                probability=self.pred_proba_test
+            )).assign(
+                correct=lambda df: df["truth"] == df["prediction"]
+            )
+
+            self.score = self.model.score(self.X_test, self.y_test)
+
+            if hasattr(self.model, "feature_importances_"):
+                self.feature_importances = pd.Series(
+                    self.model.feature_importances_,
+                    index=self.log_abund.columns
+                ).sort_values(ascending=False)
+    
+                self.feature_importances = self.feature_importances.loc[self.feature_importances > 0]
+    
+                # Feature Importance Figure
+                feature_importance_fig = px.bar(
+                    self.feature_importances,
+                    title="Feature Importances",
+                    template="simple_white"
+                )
+                feature_importance_fig.update_layout(showlegend=False)
+
+            else:
+                self.feature_importances = None
+                feature_importance_fig = mo.md("")
+
+            # Confusion Matrix Figure
+            self.conf_mat = pd.DataFrame(
+                confusion_matrix(self.pred_df["truth"], self.pred_df["prediction"]),
+                index=self.pred_df["truth"].drop_duplicates().sort_values().values,
+                columns=self.pred_df["truth"].drop_duplicates().sort_values().values,
+            )
+            conf_mat_fig = px.imshow(
+                self.conf_mat.values,
+                color_continuous_scale="gray_r",
+                title="Confusion Matrix",
+                template="simple_white",
+                labels=dict(
+                    x="Predicted Group",
+                    y="Actual Group"
+                )
+            )
+            return mo.vstack([
+                mo.md(f"### {classifier}\n\n- Overall Prediction Accuracy: {100 * self.score:.2f}%"),
+                conf_mat_fig,
+                feature_importance_fig,
+            ])
+
+        def _train_test_split(self, training_prop: float):
+            """Generate the training and testing datasets."""
+
+            train_idx = [
+                ix
+                for group, group_vals in self._groupings.groupby(self._groupings)
+                for ix in group_vals.sample(int(group_vals.shape[0] * training_prop)).index.values
+            ]
+            test_idx = [
+                ix
+                for ix in self._groupings.index.values
+                if ix not in train_idx
+            ]
+            return self._groupings.reindex(train_idx), self.log_abund.reindex(index=train_idx), self._groupings.reindex(test_idx), self.log_abund.reindex(index=test_idx)
+
+    return (CompareMetagenomeClassifyGroupsML,)
 
 
 @app.cell
 def _(
+    CompareMetagenomeClassifyGroupsML,
     CompareMetagenomeMultipleGroups,
     CompareMetagenomeTool,
-    CompareMetagenomeTwoGroups,
     List,
     mo,
 ):
@@ -3438,8 +3592,8 @@ def _(
 
         def __init__(self):
             self.tools = [
+                CompareMetagenomeClassifyGroupsML,
                 CompareMetagenomeMultipleGroups,
-                CompareMetagenomeTwoGroups
             ]
 
         def analysis_type_args(self):
@@ -3460,7 +3614,7 @@ def _(
 
 
     compare_metagenome = CompareMetagenome()
-    return CompareMetagenome, compare_metagenome
+    return (compare_metagenome,)
 
 
 @app.cell
