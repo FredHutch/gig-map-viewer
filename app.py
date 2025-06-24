@@ -98,6 +98,7 @@ async def _(micropip, mo, running_in_wasm):
 
         from cirro import DataPortalLogin, DataPortalDataset
         from cirro.config import list_tenants
+        from cirro.sdk.exceptions import DataPortalAssetNotFound
 
         # A patch to the Cirro client library is applied when running in WASM
         if running_in_wasm:
@@ -105,6 +106,7 @@ async def _(micropip, mo, running_in_wasm):
             pyodide_patch_all()
 
     return (
+        DataPortalAssetNotFound,
         DataPortalDataset,
         DataPortalLogin,
         Dict,
@@ -396,6 +398,7 @@ def _(client, lru_cache, mo):
         ds = client.get_dataset(project_id, dataset_id)
         with mo.status.spinner(f"Reading File: {filepath} ({ds.name})"):
             return ds.list_files().get_by_id(filepath).read(**kwargs)
+
     return (read_text_cached,)
 
 
@@ -727,6 +730,7 @@ def _(
 @app.cell(hide_code=True)
 def _(
     AnnData,
+    DataPortalAssetNotFound,
     DataPortalDataset,
     Dict,
     List,
@@ -1019,6 +1023,7 @@ def _(
             all_genomes = list(set([
                 genome_id
                 for df, _ in snps.values()
+                if isinstance(df, pd.DataFrame)
                 for genome_id in df.columns.values
             ]))
             ix_kwargs = dict(
@@ -1036,8 +1041,9 @@ def _(
 
             # Add up the pairwise identity data for each gene
             for overlap_df, snp_df in snps.values():
-                all_overlap = all_overlap + overlap_df.reindex(**ix_kwargs).fillna(0)
-                all_snps = all_snps + snp_df.reindex(**ix_kwargs).fillna(0)
+                if overlap_df is not None:
+                    all_overlap = all_overlap + overlap_df.reindex(**ix_kwargs).fillna(0)
+                    all_snps = all_snps + snp_df.reindex(**ix_kwargs).fillna(0)
 
             # Calculate the SNP rate
             snp_rate = (all_snps.fillna(0) / all_overlap.fillna(0)).fillna(0)
@@ -1046,7 +1052,10 @@ def _(
 
         def _read_gene_snps(self, gene_id: str):
             # Read in the FASTA with the aligned nucleotide sequences
-            gene_fasta = self.read_fasta(f"data/align/genes/{gene_id}.fasta.gz", compression="gzip")
+            try:
+                gene_fasta = self.read_fasta(f"data/align/genes/{gene_id}.fasta.gz", compression="gzip")
+            except DataPortalAssetNotFound:
+                return None, None
 
             # For each sequence, pad the beginning if the gene doesn't align from the first position
             # Use the genome alignment table to find when the alignment was partial at the beginning
