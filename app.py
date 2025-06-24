@@ -925,12 +925,17 @@ def _(
                 _genome_contents
                 .drop(columns=["bin", "n_genes_detected", "prop_genes_detected"])
                 .drop_duplicates()
+                .groupby("genome")
+                .head(1)
                 .set_index("genome")
             )
 
             # X will be the proportion of genes detected
             X = (
                 _genome_contents
+                .sort_values(by="prop_genes_detected", ascending=False)
+                .groupby(["genome", "bin"])
+                .head(1)
                 .pivot(
                     index="genome",
                     columns="bin",
