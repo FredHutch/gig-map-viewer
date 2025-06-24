@@ -734,6 +734,7 @@ def _(
     Tuple,
     cluster,
     defaultdict,
+    lru_cache,
     mo,
     np,
     pd,
@@ -995,6 +996,7 @@ def _(
                 fasta[header] = ''.join(sequence)
             return fasta
 
+        @lru_cache
         def bin_phylogeny(self, bin_id: str, n_genes: int) -> Phylogeny:
             phy = self._read_phylogeny(bin_id, n_genes)
             return phy
