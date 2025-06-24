@@ -928,6 +928,7 @@ def _(
                 .groupby("genome")
                 .head(1)
                 .set_index("genome")
+                .fillna("None")
             )
 
             # X will be the proportion of genes detected
@@ -2200,7 +2201,7 @@ def _(inspect_metagenome_datasets, mo):
     return
 
 
-@app.cell(hide_code=True)
+@app.cell
 def define_metagenome_class(
     AnnData,
     DataPortalDataset,
@@ -2332,7 +2333,7 @@ def define_metagenome_class(
 
             return AnnData(
                 X=X,
-                obs=obs.reindex(X.index),
+                obs=obs.reindex(X.index).fillna("None"),
                 var=var.reindex(index=X.columns)
             )
 
@@ -3890,6 +3891,9 @@ def class_comparemetagenometwogroups(
             )
             conf_mat_fig = px.imshow(
                 self.conf_mat.values,
+                zmin=0,
+                x=self.conf_mat.index.values,
+                y=self.conf_mat.index.values,
                 color_continuous_scale="gray_r",
                 title="Confusion Matrix",
                 template="simple_white",
@@ -3898,10 +3902,31 @@ def class_comparemetagenometwogroups(
                     y="Actual Group"
                 )
             )
+
+            # Accuracy vs. prediction probability figure
+            proba_df = pd.DataFrame([
+                dict(
+                    probability=probability,
+                    accuracy=self.pred_df.query(f"probability >= {probability}")["correct"].mean()
+                )
+                for probability in self.pred_df["probability"].unique()
+            ]).sort_values(by="probability")
+            proba_fig = px.line(
+                data_frame=proba_df,
+                x="probability",
+                y="accuracy",
+                template="simple_white",
+                labels=dict(
+                    probability="Prediction Probability Threshold",
+                    accuracy="Prediction Accuracy"
+                )
+            )
+        
             return mo.vstack([
                 mo.md(f"### {classifier}\n\n- Overall Prediction Accuracy: {100 * self.score:.2f}%"),
                 conf_mat_fig,
                 feature_importance_fig,
+                proba_fig
             ])
 
         def _train_test_split(self, training_prop: float):
