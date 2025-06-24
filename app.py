@@ -90,7 +90,7 @@ async def _(micropip, mo, running_in_wasm):
             await micropip.install("aiobotocore==2.22.0")
             await micropip.install("cirro[pyodide]==1.5.4")
 
-        from typing import Dict, Optional, List
+        from typing import Dict, Optional, List, Tuple
         from functools import lru_cache
         from collections import defaultdict
         from itertools import groupby
@@ -110,6 +110,7 @@ async def _(micropip, mo, running_in_wasm):
         Dict,
         List,
         Optional,
+        Tuple,
         copy,
         defaultdict,
         groupby,
@@ -348,7 +349,24 @@ def _(mo):
         from scipy import cluster, spatial, stats
         from anndata import AnnData
         import sklearn
-    return AnnData, cluster, pd, sklearn, spatial, stats
+        from plotly import graph_objects as go
+        from Bio.Phylo.TreeConstruction import DistanceMatrix, DistanceTreeConstructor
+        from Bio.Phylo.BaseTree import Tree, Clade
+        from Bio import Phylo
+
+    return (
+        AnnData,
+        Clade,
+        DistanceMatrix,
+        DistanceTreeConstructor,
+        Tree,
+        cluster,
+        go,
+        pd,
+        sklearn,
+        spatial,
+        stats,
+    )
 
 
 @app.cell
@@ -366,18 +384,362 @@ def _(client, lru_cache, mo):
     return (read_csv_cached,)
 
 
+@app.cell
+def _(client, lru_cache, mo):
+    @lru_cache
+    def read_text_cached(
+        project_id: str,
+        dataset_id: str,
+        filepath: str,
+        **kwargs
+    ):
+        ds = client.get_dataset(project_id, dataset_id)
+        with mo.status.spinner(f"Reading File: {filepath} ({ds.name})"):
+            return ds.list_files().get_by_id(filepath).read(**kwargs)
+    return (read_text_cached,)
+
+
+@app.cell
+def _(
+    Clade,
+    DistanceMatrix,
+    DistanceTreeConstructor,
+    Tree,
+    go,
+    make_subplots,
+    mo,
+    np,
+    pd,
+    stats,
+):
+    class Phylogeny:
+        """
+        Helper object used to coordinate a phylogeny.
+        dm is a distance matrix of SNP rates provided in pandas DataFrame format.
+        """
+        tree: Tree
+
+        def __init__(
+            self,
+            name: str,
+            snp_rate: pd.DataFrame
+        ):
+            self.name = name
+
+            # Make a distance matrix in BioPython format
+            dm = DistanceMatrix(
+                names=list(snp_rate.index.values),
+                matrix=[
+                    l[:(i+1)]
+                    for i, l in enumerate(snp_rate.values.tolist())
+                ]
+            )
+
+            # Calculate the neighbor joining tree
+            constructor = DistanceTreeConstructor()
+            self.tree = constructor.nj(dm)
+            self.tree.root_at_midpoint()
+
+            # Get the children of each node
+            self.children = {}
+            self._get_children(self.tree.clade)
+
+            self.find_coords()
+
+        def find_coords(self):
+
+            # Get the X-Y position of each node (framing the whole tree from 0-1)
+            self.coords = {}
+            self._add_coord(self.tree.clade, 0., 1.)
+
+        def _add_coord(self, clade: Clade, start: float, stop: float):
+
+            # If the clade is terminal, put it in the middle
+            if clade.is_terminal():
+                y=np.mean([start, stop])
+
+            # If it's an internal node
+            else:
+                # See how much space we have to work with
+                range = stop - start
+
+                # Get the relative sizes of each child clade
+                child_sizes = [
+                    len(child.get_terminals())
+                    for child in clade.clades
+                ]
+
+                # Position this clade between the two
+                y = start + (range * child_sizes[0] / np.sum(child_sizes))
+
+                self._add_coord(clade.clades[0], start, y)
+                self._add_coord(clade.clades[1], y, stop)
+
+            self.coords[clade.name if clade.name is not None else 'root'] = dict(
+                x=self.tree.depths().get(clade, 0),
+                y=y
+            )            
+
+        def _get_children(self, clade):
+            self.children['root' if clade.name is None else clade.name] = [child.name for child in clade.clades]
+            for child in clade.clades:
+                if not child.is_terminal():
+                    self._get_children(child)
+
+        def plot(self):
+            # Set up a figure
+            fig = go.Figure()
+
+            self._plot_lines(fig)
+            self._plot_points(fig, mode="markers+text")
+            fig.update_layout(
+                template="simple_white",
+                yaxis=dict(
+                    visible=False,
+                    showticklabels=False,
+                    showgrid=False,
+                    zeroline=False
+                ),
+                xaxis=dict(
+                    automargin=True,
+                    title_text="SNP Rate"
+                ),
+                margin=dict(l=100, r=400, b=100, t=100),
+                title_text=self.name,
+            )
+            return mo.ui.plotly(fig)
+
+        def _plot_lines(self, fig, row=1, col=1):
+
+            # For each internal node, draw a line to its children
+            for parent, children in self.children.items():
+                for child in children:
+                    fig.add_trace(
+                        go.Scatter(
+                            x=[self.coords[parent]['x'], self.coords[parent]['x'], self.coords[child]['x']],
+                            y=[self.coords[parent]['y'], self.coords[child]['y'], self.coords[child]['y']],
+                            mode="lines",
+                            showlegend=False,
+                            line_color="black"
+                        ),
+                        row=row,
+                        col=col
+                    )
+
+        def _plot_points(self, fig, mode: str, row=1, col=1):
+            # Draw each terminal node
+            fig.add_trace(
+                go.Scatter(
+                    x=self._get_coord('x'),
+                    y=self._get_coord('y'),
+                    text=[node.name for node in self.tree.get_terminals()],
+                    mode=mode,
+                    showlegend=False,
+                    textposition="middle right",
+                    marker_color="black",
+                    cliponaxis=False
+                ),
+                row=row,
+                col=col
+            )
+
+        def _get_coord(self, kw: str):
+            """Get a particular value for every item in the tree."""
+            return [
+                self.coords[node.name][kw]
+                for node in self.tree.get_terminals()
+            ]
+
+        def _plot_tracer(self, fig, use_nodes, row=1, col=1):
+            # Draw a line from each terminal node to the edge of the graph
+            edge = np.max(self._get_coord("x"))
+            for node_name in use_nodes:
+                fig.add_trace(
+                    go.Scatter(
+                        x=[self.coords[node_name]['x'], edge],
+                        y=[self.coords[node_name]['y'], self.coords[node_name]['y']],
+                        mode="lines",
+                        showlegend=False,
+                        line=dict(dash='dot', color="gray"),
+                        cliponaxis=False
+                    ),
+                    row=row,
+                    col=col
+                )
+
+        def align_trees(self, comp: 'Phylogeny'):
+
+            made_switch = True
+            for _ in range(3):
+                made_switch = False
+                score = self._score_tree_alignment(comp)
+                for node in self.tree.get_nonterminals():
+                    node.clades.reverse()
+                    new_score = self._score_tree_alignment(comp)
+                    if new_score > score:
+                        made_switch = True
+                    else:
+                        node.clades.reverse()
+                if not made_switch:
+                    break
+
+        def _score_tree_alignment(self, comp: 'Phylogeny'):
+            self_leaf_order = self._leaf_order()
+            comp_leaf_order = comp._leaf_order()
+            shared = list(set(self_leaf_order.keys()) & set(comp_leaf_order.keys()))
+            res = stats.spearmanr(
+                [self_leaf_order[i] for i in shared],
+                [comp_leaf_order[i] for i in shared]
+            )
+            return res.statistic
+
+        def _leaf_order(self):
+            return {
+                node.name: i
+                for i, node in enumerate(self.tree.get_terminals())
+            }
+
+
+        def compare(self, comp: 'Phylogeny'):
+            # Calculate the concordance of the trees
+            concordance = self._calc_concordance(comp)
+
+            # If there are fewer than 3 leafs, this cannot take place
+            if concordance is None:
+                return mo.md("Not enough shared genomes to compare.")
+
+            # Align the two trees against each other
+            self.align_trees(comp)
+            comp.align_trees(self)
+
+            # Regenerate the coordinates
+            self.find_coords()
+
+            # Plot the two trees against each other
+
+            # Set up a figure with two subplots
+            fig = make_subplots(
+                cols=3,
+                rows=1,
+                subplot_titles=(self.name, None, comp.name),
+                shared_yaxes=True,
+                horizontal_spacing=0.,
+                vertical_spacing=0.,
+                column_widths=[2, 1, 2]
+            )
+
+            shared_nodes = list(set(self._get_leafs(self.tree)) & set(comp._get_leafs(comp.tree)))
+
+            self._plot_lines(fig)
+            self._plot_points(fig, mode="markers")
+            self._plot_tracer(fig, shared_nodes)
+
+            comp._plot_lines(fig, row=1, col=3)
+            comp._plot_points(fig, mode="markers", row=1, col=3)
+            comp._plot_tracer(fig, shared_nodes, row=1, col=3)
+
+            # Draw lines between each shared leaf
+            for node_name in shared_nodes:
+                fig.add_trace(
+                    go.Scatter(
+                        x=[0, 1],
+                        y=[self.coords[node_name]['y'], comp.coords[node_name]['y']],
+                        mode="lines",
+                        showlegend=False,
+                        line=dict(dash='dot', color="gray"),
+                        cliponaxis=False
+                    ),
+                    row=1,
+                    col=2
+                )
+
+            blank_axis = dict(
+                visible=False,
+                showticklabels=False,
+                showgrid=False,
+                zeroline=False
+            )
+
+            fig.update_layout(
+                template="simple_white",
+                yaxis=blank_axis,
+                yaxis2=blank_axis,
+                yaxis3=blank_axis,
+                xaxis=dict(
+                    automargin=True,
+                    title_text="SNP Rate"
+                ),
+                xaxis2=blank_axis,
+                xaxis3=dict(
+                    automargin=True,
+                    title_text="SNP Rate",
+                    autorange="reversed"
+                ),
+                margin=dict(l=100, r=400, b=100, t=100),
+                title_text=f"{self.name} vs. {comp.name} ({concordance * 100:.1f}% Concordance)"
+            )
+
+            return mo.ui.plotly(fig)
+
+
+        def _calc_concordance(self, comp: 'Phylogeny'):
+            """
+            Concordance: Proportion of internal nodes which are shared between the trees
+            Nodes are shared if both trees contain a node with the same set of leafs.
+            """
+            # Get the shared set of leafs for both trees
+            shared_leafs = set(self._get_leafs(self.tree)) & set(self._get_leafs(comp.tree))
+            # If there are fewer than 3 shared leafs, return null
+            if len(shared_leafs) < 3:
+                return
+
+            # Make a set of sets with the terminals for each internal node
+            ref_nodes = self._get_node_terminals(self.tree, shared_leafs)
+            comp_nodes = self._get_node_terminals(comp.tree, shared_leafs)
+
+            n_shared = sum([
+                node in comp_nodes
+                for node in ref_nodes
+            ])
+            return n_shared * 2 / (len(ref_nodes) + len(comp_nodes))
+
+        def _get_leafs(self, node: Tree):
+            return [leaf.name for leaf in node.get_terminals()]
+
+        def _get_node_terminals(self, tree: Tree, shared_leafs: set):
+            nodes = [
+                set(self._get_leafs(node))
+                for node in tree.get_nonterminals()
+                if len(node.get_terminals()) > 1
+            ]
+
+            # Only keep the shared leafs (genomes)
+            nodes = [
+                frozenset(node & shared_leafs)
+                for node in nodes
+                if len(node & shared_leafs) > 1
+            ]
+
+            return set(nodes)
+    return (Phylogeny,)
+
+
 @app.cell(hide_code=True)
 def _(
     AnnData,
     DataPortalDataset,
     Dict,
     List,
+    Phylogeny,
+    Tuple,
     cluster,
+    defaultdict,
     mo,
     np,
     pd,
     query_params,
     read_csv_cached,
+    read_text_cached,
     spatial,
 ):
     # Define an object with all of the information for a pangenome
@@ -462,6 +824,12 @@ def _(
 
             # Compute the monophyly score for each bin, and then summarize across each genome
             self.compute_monophyly()
+
+            # Read the table listing coordinates in each genome where the genes aligned
+            self.genome_aln_coords = {
+                sseqid: _genome_coords
+                for sseqid, _genome_coords in self.read_csv("data/align/genomes.aln.csv.gz").groupby("sseqid")
+            }
 
         def compute_monophyly(self):
             """
@@ -548,6 +916,8 @@ def _(
                 "data/bin_pangenome/genome_content.long.csv",
                 low_memory=False
             )
+            if _genome_contents.shape[0] == 0:
+                raise Exception("Error: Missing contents in genome_content.long.csv")
 
             # Split off the genome annotation information into a separate table
             obs = (
@@ -567,12 +937,17 @@ def _(
                 )
                 .fillna(0)
             )
+            print(f"Genomes x Bins Detected: {X.shape[0]:,} x {X.shape[1]:,}")
+
+            if X.shape[0] == 0 or X.shape[1] == 0:
+                raise ValueError("No data found for this pangenome.")
 
             # Read in the ANI distance matrix for all genomes
             _genome_ani = self.read_csv(
                 "data/distances.csv.gz",
                 index_col=0
             )
+            print("Building AnnData object")
 
             # Build an AnnData object
             return AnnData(
@@ -593,6 +968,117 @@ def _(
                 self.ds.id,
                 fp,
                 **kwargs
+            )
+
+        def read_fasta(self, fp: str, **kwargs):
+            fasta = {}
+            header = None
+            sequence = []
+
+            for line in read_text_cached(
+                self.ds.project_id,
+                self.ds.id,
+                fp,
+                **kwargs
+            ).split("\n"):
+                if len(line) == 0:
+                    pass
+                elif line[0] == '>':
+                    if header is not None:
+                        fasta[header] = ''.join(sequence)
+                    header = line[1:]
+                    sequence = []
+                else:
+                    sequence.append(line)
+
+            if header is not None:
+                fasta[header] = ''.join(sequence)
+            return fasta
+
+        def bin_phylogeny(self, bin_id: str, n_genes: int) -> Phylogeny:
+            phy = self._read_phylogeny(bin_id, n_genes)
+            return phy
+
+        def _read_phylogeny(self, bin_id: str, n_genes: int):
+            # Get the pairwise proportion of SNPs for every pair of genomes, across every gene
+            snp_rate = self._merge_gene_snps({
+                gene_id: self._read_gene_snps(gene_id)
+                for gene_id in (
+                    self.bin_contents[bin_id]
+                    .sort_values(by="n_genomes", ascending=False)
+                    .head(n_genes)
+                    ["gene_id"]
+                )
+            })
+
+            return Phylogeny(bin_id, snp_rate)
+
+        def _merge_gene_snps(self, snps: Dict[str, Tuple[pd.DataFrame, pd.DataFrame]]) -> pd.DataFrame:
+            all_genomes = list(set([
+                genome_id
+                for df, _ in snps.values()
+                for genome_id in df.columns.values
+            ]))
+            ix_kwargs = dict(
+                index=all_genomes,
+                columns=all_genomes
+            )
+            all_snps = pd.DataFrame(
+                np.zeros((len(all_genomes), len(all_genomes))),
+                **ix_kwargs
+            )
+            all_overlap = pd.DataFrame(
+                np.zeros((len(all_genomes), len(all_genomes))),
+                **ix_kwargs
+            )
+
+            # Add up the pairwise identity data for each gene
+            for overlap_df, snp_df in snps.values():
+                all_overlap = all_overlap + overlap_df.reindex(**ix_kwargs).fillna(0)
+                all_snps = all_snps + snp_df.reindex(**ix_kwargs).fillna(0)
+
+            # Calculate the SNP rate
+            snp_rate = (all_snps.fillna(0) / all_overlap.fillna(0)).fillna(0)
+
+            return snp_rate
+
+        def _read_gene_snps(self, gene_id: str):
+            # Read in the FASTA with the aligned nucleotide sequences
+            gene_fasta = self.read_fasta(f"data/align/genes/{gene_id}.fasta.gz", compression="gzip")
+
+            # For each sequence, pad the beginning if the gene doesn't align from the first position
+            # Use the genome alignment table to find when the alignment was partial at the beginning
+            coords = self.genome_aln_coords[gene_id].set_index("genome")
+            # Padded sequences
+            seqs = {
+                genome_id: str(np.char.multiply("---", coords.loc[genome_id, "sstart"] - 1)) + aln_seq
+                for genome_id, aln_seq in gene_fasta.items()
+                if genome_id in coords.index
+            }
+
+            # For each pair of genomes, count up the number of shared positions, and the number of SNPs
+            overlap, snps = self._calc_snps(seqs)
+
+            return overlap, snps
+
+        def _calc_snps(self, seqs: Dict[str, str]):
+            overlap = defaultdict(lambda: defaultdict(int))
+            snps = defaultdict(lambda: defaultdict(int))
+            for genome1, seq1 in seqs.items():
+                for genome2, seq2 in seqs.items():
+                    if genome1 < genome2:
+                        for i in range(min(len(seq1), len(seq2))):
+                            if seq1[i] in ["A", "T", "C", "G"] and seq2[i] in ["A", "T", "C", "G"]:
+                                overlap[genome1][genome2] += 1
+                                overlap[genome2][genome1] += 1
+                                if seq1[i] != seq2[i]:
+                                    snps[genome1][genome2] += 1
+                                    snps[genome2][genome1] += 1
+
+            genomes = list(seqs.keys())
+            return (
+                pd.DataFrame(overlap).reindex(index=genomes, columns=genomes).fillna(0).astype(int),
+                pd.DataFrame(snps).reindex(index=genomes, columns=genomes).fillna(0).astype(int)
             )
 
 
@@ -972,7 +1458,7 @@ def _(
                     )
                 else:
                     genomes_to_plot = []
-    
+
                 for genome in include_genomes:
                     if genome not in genomes_to_plot:
                         genomes_to_plot.append(genome)
@@ -1463,6 +1949,30 @@ def _(DataPortalDataset, Pangenome, make_pangenome, mo, query_params):
                 mimetype="text/html"
             )
 
+        def display_bin_phylogeny_args(self, bin_id, **kwargs):
+            """Options from the user needed to display a phylogeny."""
+            return mo.md("""
+    ### Display Phylogeny
+
+    - {n_genes}
+            """).batch(
+                n_genes=mo.ui.number(
+                    label="Sample N Genes:",
+                    start=1,
+                    step=1,
+                    value=10
+                )
+            )
+
+        def display_bin_phylogeny(self, bin_id: str, n_genes: int, **kwargs):
+            """Show the phylogeny of a bin."""
+
+            # Read the phylogeny of a bin
+            phy = self.pg.bin_phylogeny(bin_id, n_genes)
+
+            return phy.plot()
+
+
     return (InspectGeneBin,)
 
 
@@ -1481,11 +1991,6 @@ def _(inspect_gene_bin):
 
 
 @app.cell
-def _():
-    return
-
-
-@app.cell
 def _(display_bin_args, inspect_gene_bin):
     inspect_gene_bin.display_bin(**display_bin_args.value)
     return
@@ -1494,6 +1999,37 @@ def _(display_bin_args, inspect_gene_bin):
 @app.cell
 def _(display_bin_args, inspect_gene_bin):
     inspect_gene_bin.display_bin_layout(**display_bin_args.value)
+    return
+
+
+@app.cell
+def _(display_bin_args, inspect_gene_bin):
+    display_bin_phylogeny_args = inspect_gene_bin.display_bin_phylogeny_args(**display_bin_args.value)
+    display_bin_phylogeny_args
+    return (display_bin_phylogeny_args,)
+
+
+@app.cell
+def _(display_bin_args, display_bin_phylogeny_args, mo):
+    run_phylogeny_button = mo.ui.run_button(label=f"Compute Phylogeny for {display_bin_args.value['bin_id']} (read {display_bin_phylogeny_args.value['n_genes']:,} gene alignments)")
+    run_phylogeny_button
+    return (run_phylogeny_button,)
+
+
+@app.cell
+def _(
+    display_bin_args,
+    display_bin_phylogeny_args,
+    inspect_gene_bin,
+    mo,
+    run_phylogeny_button,
+):
+    mo.stop(not run_phylogeny_button.value)
+
+    inspect_gene_bin.display_bin_phylogeny(
+        **display_bin_phylogeny_args.value,
+        **display_bin_args.value
+    )
     return
 
 
@@ -1530,9 +2066,10 @@ def _(client, compare_gene_bins_dataset_ui, mo, project_ui):
     return (compare_gene_bins_dataset,)
 
 
-@app.cell(hide_code=True)
+@app.cell
 def _(
     DataPortalDataset,
+    List,
     Pangenome,
     make_pangenome,
     make_subplots,
@@ -1562,10 +2099,7 @@ def _(
                 ),
                 genome_annot=mo.ui.dropdown(
                     label="Genome Annotation:",
-                    options=(
-                        ['None'] + self.pg.adata.obs_keys()
-                    )
-                    ,
+                    options=['None'] + self.pg.adata.obs_keys(),
                     value=(
                         "averageNucleotideIdentity_bestAniMatch_organismName"
                         if "averageNucleotideIdentity_bestAniMatch_organismName" in self.pg.adata.obs_keys()
@@ -1721,6 +2255,44 @@ def _(
                 height=height
             )
             return fig
+
+        def compare_phylogeny_args(self, bins: List[str], **kwargs):
+            """Options used to compare phylogenies of two bins."""
+            if len(bins) <= 1:
+                return mo.md("").batch()
+
+            return mo.md("""
+            ### Compare Bin Phylogenies
+            - {n_genes}
+            - {ref_bin}
+            - {comp_bin}
+            """).batch(
+                n_genes=mo.ui.number(
+                    start=1,
+                    value=10,
+                    label="Sample N Genes:"
+                ),
+                ref_bin=mo.ui.dropdown(
+                    label="Reference Bin:",
+                    options=bins,
+                    value=bins[0]
+                ),
+                comp_bin=mo.ui.dropdown(
+                    label="Comparison Bin:",
+                    options=bins,
+                    value=bins[1]
+                )
+            )
+
+        def compare_phylogeny(self, n_genes: int, ref_bin: str, comp_bin: str):
+            # Read the phylogeny of each bin
+            with mo.status.spinner(f"Loading phylogeny for {ref_bin}"):
+                ref_phy = self.pg.bin_phylogeny(ref_bin, n_genes)
+            with mo.status.spinner(f"Loading phylogeny for {comp_bin}"):
+                comp_phy = self.pg.bin_phylogeny(comp_bin, n_genes)
+
+            return ref_phy.compare(comp_phy)
+
     return (CompareGeneBins,)
 
 
@@ -1755,12 +2327,7 @@ def _(bin_overlap_args, compare_gene_bins, mo):
         value=genome_annot_groups_options()
     )
     genome_annot_groups
-    return genome_annot_groups, genome_annot_groups_options
-
-
-@app.cell
-def _():
-    return
+    return (genome_annot_groups,)
 
 
 @app.cell
@@ -1769,6 +2336,34 @@ def _(bin_overlap_args, compare_gene_bins, genome_annot_groups):
         genome_annot_groups=genome_annot_groups.value,
         **bin_overlap_args.value
     )
+    return
+
+
+@app.cell
+def _(bin_overlap_args, compare_gene_bins, mo):
+    # Options for comparing the phylogeny of two of these
+    mo.stop(len(bin_overlap_args.value.get("bins", [])) < 2)
+    compare_phylogeny_args = compare_gene_bins.compare_phylogeny_args(**bin_overlap_args.value)
+    compare_phylogeny_args
+    return (compare_phylogeny_args,)
+
+
+@app.cell
+def _(compare_phylogeny_args, mo):
+    run_compare_phylogeny_button = mo.ui.run_button(label=f"Compare Phylogeny for {compare_phylogeny_args.value['ref_bin']} and {compare_phylogeny_args.value['comp_bin']} (read {compare_phylogeny_args.value['n_genes']:,} gene alignments each)")
+    run_compare_phylogeny_button
+    return (run_compare_phylogeny_button,)
+
+
+@app.cell
+def _(
+    compare_gene_bins,
+    compare_phylogeny_args,
+    mo,
+    run_compare_phylogeny_button,
+):
+    mo.stop(run_compare_phylogeny_button.value is False)
+    compare_gene_bins.compare_phylogeny(**compare_phylogeny_args.value)
     return
 
 
@@ -2274,8 +2869,8 @@ def define_inspect_metagenome(
                 .apply(np.log10)
             )
 
-            self.specimen_order = sort_axis(self.log_abund, metric="euclidean", method="ward")
-            self.bin_order = sort_axis(self.log_abund.T, metric="euclidean", method="ward")
+            self.specimen_order = sort_axis(self.log_abund, metric="euclidean", method="average")
+            self.bin_order = sort_axis(self.log_abund.T, metric="euclidean", method="average")
 
             self.abund = self.abund.reindex(index=self.specimen_order, columns=self.bin_order)
             self.log_abund = self.log_abund.reindex(index=self.specimen_order, columns=self.bin_order)
@@ -2808,17 +3403,7 @@ def define_inspect_metagenome(
             colors_df[cname] = cvals.apply(cmap[cname].get)
 
         return pd.DataFrame(colors_df), cmap
-    return (
-        HashableDataFrame,
-        InspectMetagenome,
-        InspectMetagenomeAnalysis,
-        hash_pandas_object,
-        make_df_cmap,
-        run_kmeans_clustering,
-        run_tsne,
-        sha256,
-        try_kruskal,
-    )
+    return InspectMetagenome, InspectMetagenomeAnalysis, make_df_cmap
 
 
 @app.cell
@@ -3218,12 +3803,12 @@ def class_comparemetagenomemultiplegroups(
             specimen_order = sort_axis(
                 log_abund.dropna(how="all", axis=1),
                 metric="euclidean",
-                method="ward"
+                method="average"
             )
             bin_order = sort_axis(
                 log_abund.dropna(how="all", axis=1).T,
                 metric="euclidean",
-                method="ward"
+                method="average"
             )
             obs = obs.reindex(index=specimen_order)
             abund = abund.reindex(index=specimen_order, columns=bin_order)
@@ -3524,9 +4109,9 @@ def class_comparemetagenometwogroups(
                     self.model.feature_importances_,
                     index=self.log_abund.columns
                 ).sort_values(ascending=False)
-    
+
                 self.feature_importances = self.feature_importances.loc[self.feature_importances > 0]
-    
+
                 # Feature Importance Figure
                 feature_importance_fig = px.bar(
                     self.feature_importances,
