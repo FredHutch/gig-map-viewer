@@ -13,7 +13,6 @@ def _(mo):
                     "#pangenome-viewer-gig-map": f"{mo.icon('lucide:info')} About",
                     "#connect-to-database": f"{mo.icon('lucide:database')} Connect",
                     "#inspect-pangenome": f"{mo.icon('lucide:map')} Inspect Pangenome",
-                    "#compare-pangenomes": f"{mo.icon('lucide:map-plus')} Compare Pangenomes",
                     "#inspect-gene-bin": f"{mo.icon('lucide:box')} Inspect Gene Bin",
                     "#compare-gene-bins": f"{mo.icon('lucide:boxes')} Compare Gene Bins",
                     "#inspect-metagenomes": f"{mo.icon('lucide:test-tube-diagonal')} Inspect Metagenomes",
@@ -181,7 +180,6 @@ def select_tenant(domain_to_name, mo, query_params, tenants_by_name):
     domain_ui = mo.ui.dropdown(
         options=tenants_by_name,
         value=domain_to_name(query_params.get("domain")),
-        on_change=lambda i: query_params.set("domain", i["domain"]),
         label="Load Data from Cirro",
     )
     domain_ui
@@ -260,8 +258,7 @@ def _(id_to_name, mo, name_to_id, projects, query_params):
     project_ui = mo.ui.dropdown(
         label="Select Project:",
         value=id_to_name(projects, query_params.get("project")),
-        options=name_to_id(projects),
-        on_change=lambda i: query_params.set("project", i)
+        options=name_to_id(projects)
     )
     project_ui
     return (project_ui,)
@@ -294,8 +291,7 @@ def _(id_to_name, mo, name_to_id, pangenome_datasets, query_params):
     pangenome_dataset_ui = mo.ui.dropdown(
         label="Select Pangenome:",
         value=id_to_name(pangenome_datasets, query_params.get("inspect_pangenome")),
-        options=name_to_id(pangenome_datasets),
-        on_change=lambda i: query_params.set("inspect_pangenome", i)
+        options=name_to_id(pangenome_datasets)
     )
     pangenome_dataset_ui
     return (pangenome_dataset_ui,)
@@ -1390,8 +1386,7 @@ def _(
                             else
                             self.pg.adata.obs.index.name
                         )
-                    ),
-                    on_change=lambda val: query_params.set("inspect_genomes_annotate_by", val)
+                    )
                 ),
                 label_offset_x=mo.ui.number(value=0.),
                 label_offset_y=mo.ui.number(value=0.5),
@@ -1652,233 +1647,8 @@ def _(inspect_pangenome, inspect_pangenome_plot_scatter_args):
 
 @app.cell
 def _(mo):
-    mo.md(r"""## Compare Pangenomes""")
-    return
-
-
-@app.cell
-def _(id_to_name, mo, name_to_id, pangenome_datasets, query_params):
-    # Let the user select which pangenome datasets to compare
-    compare_pangenomes_dataset_ui = mo.ui.multiselect(
-        label="Select Pangenomes to Compare:",
-        value=[
-            id_to_name(pangenome_datasets, ds_id)
-            for ds_id in query_params.get("compare_pangenomes_datasets", "").split(",")
-            if len(ds_id) > 0
-        ],
-        options=name_to_id(pangenome_datasets),
-        on_change=lambda i: query_params.set("compare_pangenomes_datasets", ",".join(i))
-    )
-    compare_pangenomes_dataset_ui
-    return (compare_pangenomes_dataset_ui,)
-
-
-@app.cell
-def _(
-    client,
-    compare_pangenomes_dataset_ui,
-    id_to_name,
-    mo,
-    pangenome_datasets,
-    project_ui,
-):
-    # Stop if the user has not selected a dataset
-    mo.stop(compare_pangenomes_dataset_ui.value is None)
-
-    # Get the selected datasets
-    compare_pangenomes_datasets = [
-        (
-            client
-            .get_project_by_id(project_ui.value)
-            .get_dataset_by_id(ds_id)
-        )
-        for ds_id in compare_pangenomes_dataset_ui.value
-    ]
-
-    mo.md("""
-    Selected:
-
-    {selected}
-    """.format(
-        selected="\n".join([
-            "- " + id_to_name(pangenome_datasets, i)
-            for i in compare_pangenomes_dataset_ui.value
-        ])
-    ))
-    return (compare_pangenomes_datasets,)
-
-
-@app.cell(hide_code=True)
-def _(
-    DataPortalDataset,
-    List,
-    Pangenome,
-    make_pangenome,
-    mo,
-    pd,
-    px,
-    query_params,
-):
-    class ComparePangenomes:
-        pg_list: List[Pangenome]
-
-        def __init__(self, ds_list: List[DataPortalDataset]):
-            self.pg_list = [
-                make_pangenome(ds, float(query_params.get("min_prop", 0.5)))
-                for ds in ds_list
-            ]
-
-            # Combine the genome annotations across all pangneomes
-            self.genome_df = pd.concat([
-                (
-                    pg.adata
-                    .obs
-                    .reindex(columns=["n_genes", "monophyly"])
-                    .assign(
-                        pangenome=pg.ds.name
-                    )
-                )
-                for pg in self.pg_list
-            ])
-
-            # Combine the gene bin annotations across all pangneomes
-            self.bin_df = pd.concat([
-                (
-                    pg.adata
-                    .var
-                    .reindex(columns=["n_genes", "monophyly"])
-                    .assign(
-                        pangenome=pg.ds.name
-                    )
-                )
-                for pg in self.pg_list
-            ])
-
-        def args(self):
-            return mo.md(
-                """### Compare Pangenomes
-
-     - Compare By: {compare_by}
-     - Number of Histogram Bins: {nbins}
-     - Figure Height: {height}
-
-            """).batch(
-                compare_by=mo.ui.dropdown(
-                    options=[
-                        "Genome Size",
-                        "Genome Monophyly",
-                        "Gene Bin Size"
-                    ],
-                    value="Genome Size"
-                ),
-                nbins=mo.ui.number(
-                    start=2,
-                    stop=100,
-                    step=1,
-                    value=30
-                ),
-                height=mo.ui.number(
-                    start=100,
-                    stop=10000,
-                    step=10,
-                    value=600
-                )
-            )
-
-        def plot(
-            self,
-            compare_by: str,
-            nbins: int,
-            height: int,
-        ):
-            if compare_by == "Genome Size":
-                axis = "genomes"
-                y = "n_genes"
-                ylabel = "# of Genes per Genome"
-                title = "Number of Genes per Genome"
-                log = False
-            elif compare_by == "Genome Monophyly":
-                axis = "genomes"
-                y = "monophyly"
-                ylabel = "Monophyly"
-                title = "Genome Monophyly"
-                log = False
-            elif compare_by == "Gene Bin Size":
-                axis = "bins"
-                y = "n_genes"
-                ylabel = "# of Genes per Bin"
-                title = "Number of Genes per Bin"
-                log = True
-
-            fig = px.histogram(
-                self.genome_df if axis == "genomes" else self.bin_df,
-                y=y,
-                facet_col="pangenome",
-                labels={y: ylabel},
-                template="simple_white",
-                nbins=nbins,
-                height=height,
-                title=title,
-                log_x=log
-            )
-            fig.update_xaxes(matches=None)
-            return fig
-    return (ComparePangenomes,)
-
-
-@app.cell
-def _(ComparePangenomes, compare_pangenomes_datasets, mo):
-    mo.stop(len(compare_pangenomes_datasets) < 2)
-    compare_pangenomes = ComparePangenomes(compare_pangenomes_datasets)
-    return (compare_pangenomes,)
-
-
-@app.cell
-def _(compare_pangenomes):
-    compare_pangenomes_args = compare_pangenomes.args()
-    compare_pangenomes_args
-    return (compare_pangenomes_args,)
-
-
-@app.cell
-def _(compare_pangenomes, compare_pangenomes_args):
-    compare_pangenomes.plot(
-        **compare_pangenomes_args.value
-    )
-    return
-
-
-@app.cell
-def _(mo):
     mo.md(r"""## Inspect Gene Bin""")
     return
-
-
-@app.cell
-def _(id_to_name, mo, name_to_id, pangenome_datasets, query_params):
-    # Let the user select which pangenome dataset to get data from
-    gene_bin_dataset_ui = mo.ui.dropdown(
-        label="Select Pangenome:",
-        value=id_to_name(pangenome_datasets, query_params.get("inspect_gene_bin_dataset")),
-        options=name_to_id(pangenome_datasets),
-        on_change=lambda i: query_params.set("inspect_gene_bin_dataset", i)
-    )
-    gene_bin_dataset_ui
-    return (gene_bin_dataset_ui,)
-
-
-@app.cell
-def _(client, gene_bin_dataset_ui, mo, project_ui):
-    # Stop if the user has not selected a dataset
-    mo.stop(gene_bin_dataset_ui.value is None)
-
-    # Get the selected dataset
-    gene_bin_dataset = (
-        client
-        .get_project_by_id(project_ui.value)
-        .get_dataset_by_id(gene_bin_dataset_ui.value)
-    )
-    return (gene_bin_dataset,)
 
 
 @app.cell(hide_code=True)
@@ -1988,8 +1758,8 @@ def _(DataPortalDataset, Pangenome, make_pangenome, mo, query_params):
 
 
 @app.cell
-def _(InspectGeneBin, gene_bin_dataset):
-    inspect_gene_bin = InspectGeneBin(gene_bin_dataset)
+def _(InspectGeneBin, pangenome_dataset):
+    inspect_gene_bin = InspectGeneBin(pangenome_dataset)
     return (inspect_gene_bin,)
 
 
@@ -2050,34 +1820,7 @@ def _(mo):
     return
 
 
-@app.cell
-def _(id_to_name, mo, name_to_id, pangenome_datasets, query_params):
-    # Let the user select which pangenome dataset to get data from
-    compare_gene_bins_dataset_ui = mo.ui.dropdown(
-        label="Select Pangenome:",
-        value=id_to_name(pangenome_datasets, query_params.get("compare_gene_bins_dataset")),
-        options=name_to_id(pangenome_datasets),
-        on_change=lambda i: query_params.set("compare_gene_bins_dataset", i)
-    )
-    compare_gene_bins_dataset_ui
-    return (compare_gene_bins_dataset_ui,)
-
-
-@app.cell
-def _(client, compare_gene_bins_dataset_ui, mo, project_ui):
-    # Stop if the user has not selected a dataset
-    mo.stop(compare_gene_bins_dataset_ui.value is None)
-
-    # Get the selected dataset
-    compare_gene_bins_dataset = (
-        client
-        .get_project_by_id(project_ui.value)
-        .get_dataset_by_id(compare_gene_bins_dataset_ui.value)
-    )
-    return (compare_gene_bins_dataset,)
-
-
-@app.cell
+@app.cell(hide_code=True)
 def _(
     DataPortalDataset,
     List,
@@ -2308,8 +2051,8 @@ def _(
 
 
 @app.cell
-def _(CompareGeneBins, compare_gene_bins_dataset):
-    compare_gene_bins = CompareGeneBins(compare_gene_bins_dataset)
+def _(CompareGeneBins, pangenome_dataset):
+    compare_gene_bins = CompareGeneBins(pangenome_dataset)
     return (compare_gene_bins,)
 
 
@@ -2415,8 +2158,7 @@ def _(id_to_name, metagenome_datasets, mo, name_to_id, query_params):
                 else []
             )
         ],
-        options=name_to_id(metagenome_datasets),
-        on_change=lambda i: query_params.set("inspect_metagenome", ','.join(i))
+        options=name_to_id(metagenome_datasets)
     )
     inspect_metagenome_datasets_ui
     return (inspect_metagenome_datasets_ui,)
@@ -4397,16 +4139,14 @@ def _(mo, query_params):
             label="Minimum Proportion of Genes in Bin:",
             start=0.01,
             stop=1.0,
-            value=float(query_params.get("min_prop", '0.5')),
-            on_change=lambda val: query_params.set("min_prop", val)
+            value=float(query_params.get("min_prop", '0.5'))
         ),
         min_genes_rel_median=mo.ui.number(
             label="Minimum Number of Genes per Genome (Median Fraction):",
             start=0.01,
             stop=1.0,
             step=0.01,
-            value=float(query_params.get("min_genes_rel_median", '0.5')),
-            on_change=lambda val: query_params.set("min_genes_rel_median", val)
+            value=float(query_params.get("min_genes_rel_median", '0.5'))
         )
     )
     return
