@@ -2237,19 +2237,25 @@ def define_metagenome_class(
             self.adata = self._make_adata()
 
             # Get the pangenome that was used for this analysis
-            self.pg = Pangenome(
-                next((
+            pg_dataset_id = (
+                self.ds
+                .params
+                .additional_properties
+                ['inputs']
+                ['pangenome']
+                .rsplit("/", 1)[-1]
+            )
+            try:
+                pg_dataset = next((
                     pangenome_dataset
                     for pangenome_dataset in pangenome_datasets
-                    if pangenome_dataset.id == (
-                        self.ds
-                        .params
-                        .additional_properties
-                        ['inputs']
-                        ['pangenome']
-                        .rsplit("/", 1)[-1]
-                    )
-                )),
+                    if pangenome_dataset.id == pg_dataset_id
+                ))
+            except StopIteration:
+                raise Exception(f"The reference pangenome ({pg_dataset_id}) was not found")
+            
+            self.pg = Pangenome(
+                pg_dataset,
                 min_prop=float(query_params.get("min_prop", 0.5))
             )
 
@@ -3921,7 +3927,7 @@ def class_comparemetagenometwogroups(
                     accuracy="Prediction Accuracy"
                 )
             )
-        
+
             return mo.vstack([
                 mo.md(f"### {classifier}\n\n- Overall Prediction Accuracy: {100 * self.score:.2f}%"),
                 conf_mat_fig,
