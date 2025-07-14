@@ -87,7 +87,7 @@ async def _(micropip, mo, running_in_wasm):
             await micropip.install("s3transfer==0.11.3")
             await micropip.install("boto3==1.37.3")
             await micropip.install("aiobotocore==2.22.0")
-            await micropip.install("cirro[pyodide]==1.5.4")
+            await micropip.install("cirro[pyodide]==1.5.4")        
 
         from typing import Dict, Optional, List, Tuple
         from functools import lru_cache
@@ -344,6 +344,7 @@ def _(mo, pangenome_dataset):
 def _(mo):
     with mo.status.spinner("Loading dependencies"):
         import pandas as pd
+        import pyarrow
         from scipy import cluster, spatial, stats
         from anndata import AnnData
         import sklearn
@@ -487,7 +488,7 @@ def _(
 
         def plot(self):
             # Set up a figure
-            fig = go.Figure()
+            fig = make_subplots(rows=1, cols=1)
 
             self._plot_lines(fig)
             self._plot_points(fig, mode="markers+text")
@@ -1657,7 +1658,7 @@ def _(mo):
     return
 
 
-@app.cell(hide_code=True)
+@app.cell
 def _(DataPortalDataset, Pangenome, make_pangenome, mo, query_params):
     class InspectGeneBin:
         pg: Pangenome
@@ -1826,7 +1827,7 @@ def _(mo):
     return
 
 
-@app.cell(hide_code=True)
+@app.cell
 def _(
     DataPortalDataset,
     List,
@@ -2253,7 +2254,7 @@ def define_metagenome_class(
                 ))
             except StopIteration:
                 raise Exception(f"The reference pangenome ({pg_dataset_id}) was not found")
-            
+
             self.pg = Pangenome(
                 pg_dataset,
                 min_prop=float(query_params.get("min_prop", 0.5))
