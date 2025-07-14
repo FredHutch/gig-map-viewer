@@ -1169,7 +1169,7 @@ def _(
 
         def plot_heatmap_args(self):
             return mo.md("""
-    ### Inspect Pangenome: Heatmap Options
+    ### Inspect Pangenome: Heatmap
 
      - {top_n_bins}
      - {include_bins}
@@ -3413,8 +3413,8 @@ def class_comparemetagenomemultiplegroups(
             ).batch(
                 test=mo.ui.dropdown(
                     label="Statistical Test",
-                    options=["ANOVA", "Kruskal-Wallis"],
-                    value="ANOVA"
+                    options=["Kruskal-Wallis", "ANOVA"],
+                    value="Kruskal-Wallis"
                 ),
                 query=mo.ui.text(
                     label="Filter Specimens (optional):",
@@ -3667,7 +3667,7 @@ def class_comparemetagenomemultiplegroups(
 
         def tertiary_plot_args(self, include_groups: List[str], grouping_cname: str, **kwargs):
             return mo.md("""
-     - {select_single_bin}
+     - {select_bins}
      - {single_bin_group_order}
      - {xaxis_label}
      - {single_bin_width}
@@ -3988,8 +3988,8 @@ def _(
 
         def __init__(self):
             self.tools = [
-                CompareMetagenomeClassifyGroupsML,
                 CompareMetagenomeMultipleGroups,
+                CompareMetagenomeClassifyGroupsML,
             ]
 
         def analysis_type_args(self):
