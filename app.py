@@ -3317,7 +3317,20 @@ def _(mo):
 
 
 @app.cell
-def class_comparemetagenometool(AnnData, inspect_metagenome_analysis, mo, pd):
+def class_comparemetagenometool(
+    AnnData,
+    List,
+    Patch,
+    format_log_ticks,
+    inspect_metagenome_analysis,
+    make_df_cmap,
+    mo,
+    pd,
+    plt,
+    px,
+    sns,
+    sort_axis,
+):
     class CompareMetagenomeTool:
         """Base class used for all analysis methods."""
         name: str
@@ -3353,176 +3366,11 @@ def class_comparemetagenometool(AnnData, inspect_metagenome_analysis, mo, pd):
             return mo.md("").batch()
 
         def make_primary_plot(self, **kwargs):
-            pass
-
-        def secondary_plot_args(self, **kwargs):
-            return mo.md("").batch()
-
-        def make_secondary_plot(self, **kwargs):
-            pass
-
-        def tertiary_plot_args(self, **kwargs):
-            return mo.md("").batch()
-
-        def make_tertiary_plot(self, **kwargs):
-            pass
-
-        def _filtered_obs(self, query: str):
-            if query is not None and len(query) > 0:
-                return self.adata.obs.query(query)
-            else:
-                return self.adata.obs
-
-    return (CompareMetagenomeTool,)
-
-
-@app.cell
-def class_comparemetagenomemultiplegroups(
-    CompareMetagenomeTool,
-    List,
-    Patch,
-    format_log_ticks,
-    make_df_cmap,
-    mo,
-    pd,
-    plt,
-    px,
-    sns,
-    sort_axis,
-    stats,
-):
-    class CompareMetagenomeMultipleGroups(CompareMetagenomeTool):
-        name = "Compare Groups - Test Each Organism"
-        description = """
-        Test each organism individually for differences in abundance between groups.
-        Can use either the ANOVA (parametric) or Kruskal-Wallis H (non-parametric) tests.
-        Does not account for any interaction or correlation between organisms.
-        Results are presented in terms of a single p-value for each organism which
-        indicates whether there is a difference between any of the groups.
-        """
-        _mean_log_rpkm_prefix = "mean_log_rpkm - "
-        _median_log_rpkm_prefix = "median_log_rpkm - "
-
-        def primary_args(self):
-            return mo.md(
-                """
-    - {test}
-    - {grouping_cname}
-    - {query}
-                """
-            ).batch(
-                test=mo.ui.dropdown(
-                    label="Statistical Test",
-                    options=["Kruskal-Wallis", "ANOVA"],
-                    value="Kruskal-Wallis"
-                ),
-                query=mo.ui.text(
-                    label="Filter Specimens (optional):",
-                    placeholder="e.g. cname == 'Group A'",
-                    full_width=True
-                ),
-                grouping_cname=mo.ui.dropdown(
-                    label="Compare Groups Defined By:",
-                    options=self.adata.obs.columns.values,
-                    value="specimen_clusters"
-                )
-            )
-
-        def secondary_args(self, grouping_cname: str, query: str, **kwargs):
-            try:
-                self._filtered_obs(query)
-            except ValueError:
-                return mo.md(f"Invalid query syntax: {query}").batch()
-
-            # Get the groups present in the selected column
-            groups = self._filtered_obs(query)[grouping_cname].unique()
-
-            return mo.md("""
-    - {include_groups}
-            """).batch(
-                include_groups=mo.ui.multiselect(
-                    label="Include Groups:",
-                    options=groups,
-                    value=groups
-                )
-            )
-
-        def run_analysis(
-            self,
-            query: str,
-            grouping_cname: str,
-            test: str,
-            include_groups: List[str]
-        ):
-            # Make sure that multiple groups were included
-            if not len(include_groups) > 1:
-                return mo.md("Must select multiple groups for analysis")
-
-            # Optionally filter, and get only those groups which were selected
-            obs = self._filtered_obs(query)
-            self._groupings = obs.loc[
-                obs[grouping_cname].isin(include_groups)
-            ][grouping_cname]
-
-            if test == "Kruskal-Wallis":
-                self.res = self._compare_groups("kruskal")
-            elif test == "ANOVA":
-                self.res = self._compare_groups("f_oneway")
-
-            self._ready_to_plot = True
-
-        def _compare_groups(self, test_name: str):
-            # Compute the results
-            df = pd.DataFrame([
-                dict(
-                    bin=bin,
-                    mean_log_rpkm=bin_log_rpkm.mean(),
-                    median_log_rpkm=bin_log_rpkm.median(),
-                    **self._compare_groups_single(bin_log_rpkm, test_name),
-                    **self._group_stats(bin_log_rpkm),
-                )
-                for bin, bin_log_rpkm in self.log_abund.items()
-            ]).sort_values(by="pvalue")
-
-            # Calculate the log2 fold difference between every pair of groups
-            df = df.assign(**{
-                f"log2_fold_difference - {cname1[len(self._mean_log_rpkm_prefix):]} / {cname2[len(self._mean_log_rpkm_prefix):]}": df[cname1] - df[cname2]
-                for cname1 in df.columns.values
-                if cname1.startswith(self._mean_log_rpkm_prefix)
-                for cname2 in df.columns
-                if cname2.startswith(self._mean_log_rpkm_prefix)
-                if cname1 != cname2
-            })
-            return df
-
-        def _group_stats(self, bin_log_rpkm: pd.Series):
-            return {
-                kw: val
-                for group_name, group_vals in bin_log_rpkm.groupby(self._groupings)
-                for kw, val in {
-                    self._mean_log_rpkm_prefix + str(group_name): group_vals.mean(),
-                    self._median_log_rpkm_prefix + str(group_name): group_vals.median()
-                }.items()
-            }
-
-        def _compare_groups_single(self, bin_log_rpkm: pd.Series, test_name: str):
-            try:
-                return dict(zip(
-                    ["statistic", "pvalue"],
-                    getattr(stats, test_name)(
-                        *[
-                            vals
-                            for _, vals in bin_log_rpkm.groupby(self._groupings)
-                        ]
-                    )
-                ))
-            except ValueError:
-                return dict(statistic=None, pvalue=None)
-
-        def make_primary_plot(self, **kwargs):
             return self.res
 
         def secondary_plot_args(self,grouping_cname: str, **kwargs):
+            if self.res is None:
+                return
 
             return mo.md("""
     ### Compare Metagenomes: Heatmap Options
@@ -3666,6 +3514,8 @@ def class_comparemetagenomemultiplegroups(
 
 
         def tertiary_plot_args(self, include_groups: List[str], grouping_cname: str, **kwargs):
+            if self.res is None:
+                return
             return mo.md("""
      - {select_bins}
      - {single_bin_group_order}
@@ -3711,7 +3561,11 @@ def class_comparemetagenomemultiplegroups(
         ):
             plot_df = pd.DataFrame(
                 {
-                    grouping_cname: self._groupings,
+                    grouping_cname: (
+                        self._groupings.iloc[:, 0]
+                        if self._groupings.ndim == 2
+                        else self._groupings
+                    ),
                     "bin_abund": self.log_abund[select_bins].sum(axis=1)
                 }
             ).dropna()
@@ -3736,6 +3590,151 @@ def class_comparemetagenomemultiplegroups(
             fig.update_xaxes(type="category")
 
             return fig
+
+        def _filtered_obs(self, query: str):
+            if query is not None and len(query) > 0:
+                return self.adata.obs.query(query)
+            else:
+                return self.adata.obs
+
+    return (CompareMetagenomeTool,)
+
+
+@app.cell
+def class_comparemetagenomemultiplegroups(
+    CompareMetagenomeTool,
+    List,
+    mo,
+    pd,
+    stats,
+):
+    class CompareMetagenomeMultipleGroups(CompareMetagenomeTool):
+        name = "Compare Groups - Test Each Organism"
+        description = """
+        Test each organism individually for differences in abundance between groups.
+        Can use either the ANOVA (parametric) or Kruskal-Wallis H (non-parametric) tests.
+        Does not account for any interaction or correlation between organisms.
+        Results are presented in terms of a single p-value for each organism which
+        indicates whether there is a difference between any of the groups.
+        """
+        _mean_log_rpkm_prefix = "mean_log_rpkm - "
+        _median_log_rpkm_prefix = "median_log_rpkm - "
+
+        def primary_args(self):
+            return mo.md(
+                """
+    - {test}
+    - {grouping_cname}
+    - {query}
+                """
+            ).batch(
+                test=mo.ui.dropdown(
+                    label="Statistical Test",
+                    options=["Kruskal-Wallis", "ANOVA"],
+                    value="Kruskal-Wallis"
+                ),
+                query=mo.ui.text(
+                    label="Filter Specimens (optional):",
+                    placeholder="e.g. cname == 'Group A'",
+                    full_width=True
+                ),
+                grouping_cname=mo.ui.dropdown(
+                    label="Compare Groups Defined By:",
+                    options=self.adata.obs.columns.values,
+                    value="specimen_clusters"
+                )
+            )
+
+        def secondary_args(self, grouping_cname: str, query: str, **kwargs):
+            try:
+                self._filtered_obs(query)
+            except ValueError:
+                return mo.md(f"Invalid query syntax: {query}").batch()
+
+            # Get the groups present in the selected column
+            groups = self._filtered_obs(query)[grouping_cname].unique()
+
+            return mo.md("""
+    - {include_groups}
+            """).batch(
+                include_groups=mo.ui.multiselect(
+                    label="Include Groups:",
+                    options=groups,
+                    value=groups
+                )
+            )
+
+        def run_analysis(
+            self,
+            query: str,
+            grouping_cname: str,
+            test: str,
+            include_groups: List[str]
+        ):
+            # Make sure that multiple groups were included
+            if not len(include_groups) > 1:
+                return mo.md("Must select multiple groups for analysis")
+
+            # Optionally filter, and get only those groups which were selected
+            obs = self._filtered_obs(query)
+            self._groupings = obs.loc[
+                obs[grouping_cname].isin(include_groups)
+            ][grouping_cname]
+
+            if test == "Kruskal-Wallis":
+                self.res = self._compare_groups("kruskal")
+            elif test == "ANOVA":
+                self.res = self._compare_groups("f_oneway")
+
+            self._ready_to_plot = True
+
+        def _compare_groups(self, test_name: str):
+            # Compute the results
+            df = pd.DataFrame([
+                dict(
+                    bin=bin,
+                    mean_log_rpkm=bin_log_rpkm.mean(),
+                    median_log_rpkm=bin_log_rpkm.median(),
+                    **self._compare_groups_single(bin_log_rpkm, test_name),
+                    **self._group_stats(bin_log_rpkm),
+                )
+                for bin, bin_log_rpkm in self.log_abund.items()
+            ]).sort_values(by="pvalue")
+
+            # Calculate the log2 fold difference between every pair of groups
+            df = df.assign(**{
+                f"log2_fold_difference - {cname1[len(self._mean_log_rpkm_prefix):]} / {cname2[len(self._mean_log_rpkm_prefix):]}": df[cname1] - df[cname2]
+                for cname1 in df.columns.values
+                if cname1.startswith(self._mean_log_rpkm_prefix)
+                for cname2 in df.columns
+                if cname2.startswith(self._mean_log_rpkm_prefix)
+                if cname1 != cname2
+            })
+            return df
+
+        def _group_stats(self, bin_log_rpkm: pd.Series):
+            return {
+                kw: val
+                for group_name, group_vals in bin_log_rpkm.groupby(self._groupings)
+                for kw, val in {
+                    self._mean_log_rpkm_prefix + str(group_name): group_vals.mean(),
+                    self._median_log_rpkm_prefix + str(group_name): group_vals.median()
+                }.items()
+            }
+
+        def _compare_groups_single(self, bin_log_rpkm: pd.Series, test_name: str):
+            try:
+                return dict(zip(
+                    ["statistic", "pvalue"],
+                    getattr(stats, test_name)(
+                        *[
+                            vals
+                            for _, vals in bin_log_rpkm.groupby(self._groupings)
+                        ]
+                    )
+                ))
+            except ValueError:
+                return dict(statistic=None, pvalue=None)
     return (CompareMetagenomeMultipleGroups,)
 
 
@@ -3892,10 +3891,16 @@ def class_comparemetagenometwogroups(
             self.score = self.model.score(self.X_test, self.y_test)
 
             if hasattr(self.model, "feature_importances_"):
-                self.feature_importances = pd.Series(
-                    self.model.feature_importances_,
-                    index=self.log_abund.columns
-                ).sort_values(ascending=False)
+                self.res = pd.DataFrame(
+                    dict(
+                        bin=self.log_abund.columns,
+                        feature_importance=self.model.feature_importances_
+                    )
+                ).sort_values(
+                    by="feature_importance",
+                    ascending=False
+                )
+                self.feature_importances = self.res.set_index("bin")["feature_importance"]
 
                 self.feature_importances = self.feature_importances.loc[self.feature_importances > 0]
 
@@ -3908,6 +3913,7 @@ def class_comparemetagenometwogroups(
                 feature_importance_fig.update_layout(showlegend=False)
 
             else:
+                self.res = None
                 self.feature_importances = None
                 feature_importance_fig = mo.md("")
 
