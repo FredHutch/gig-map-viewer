@@ -402,9 +402,11 @@ def _(client, lru_cache, mo):
 @app.cell
 def _(
     Clade,
+    Dict,
     DistanceMatrix,
     DistanceTreeConstructor,
     Tree,
+    defaultdict,
     go,
     make_subplots,
     mo,
@@ -418,6 +420,8 @@ def _(
         dm is a distance matrix of SNP rates provided in pandas DataFrame format.
         """
         tree: Tree
+        dm: DistanceMatrix
+        distances: Dict[str, Dict[str, float]]
 
         def __init__(
             self,
@@ -427,7 +431,7 @@ def _(
             self.name = name
 
             # Make a distance matrix in BioPython format
-            dm = DistanceMatrix(
+            self.dm = DistanceMatrix(
                 names=list(snp_rate.index.values),
                 matrix=[
                     l[:(i+1)]
@@ -435,9 +439,17 @@ def _(
                 ]
             )
 
+            # Store the distances as a dict of dicts
+            self.distances = defaultdict(dict)
+            for ix1, name1 in enumerate(self.dm.names):
+                for ix2, name2 in enumerate(self.dm.names):
+                    if ix1 < ix2:
+                        self.distances[name1][name2] = self.dm.matrix[ix2][ix1]
+                        self.distances[name2][name1] = self.dm.matrix[ix2][ix1]
+
             # Calculate the neighbor joining tree
             constructor = DistanceTreeConstructor()
-            self.tree = constructor.nj(dm)
+            self.tree = constructor.nj(self.dm)
             self.tree.root_at_midpoint()
 
             # Get the children of each node
@@ -601,7 +613,6 @@ def _(
 
 
         def compare(self, comp: 'Phylogeny'):
-            # Calculate the concordance of the trees
             concordance = self._calc_concordance(comp)
 
             # If there are fewer than 3 leafs, this cannot take place
@@ -676,7 +687,7 @@ def _(
                     autorange="reversed"
                 ),
                 margin=dict(l=100, r=400, b=100, t=100),
-                title_text=f"{self.name} vs. {comp.name} ({concordance * 100:.1f}% Concordance)"
+                title_text=f"{self.name} vs. {comp.name} (Pairwise Distances - Spearman rho: {concordance:.1f})"
             )
 
             return mo.ui.plotly(fig)
@@ -684,24 +695,33 @@ def _(
 
         def _calc_concordance(self, comp: 'Phylogeny'):
             """
-            Concordance: Proportion of internal nodes which are shared between the trees
+            Concordance: Spearman correlation of distances for all shared nodes.
             Nodes are shared if both trees contain a node with the same set of leafs.
             """
             # Get the shared set of leafs for both trees
-            shared_leafs = set(self._get_leafs(self.tree)) & set(self._get_leafs(comp.tree))
+            shared_leafs = list(set(self._get_leafs(self.tree)) & set(self._get_leafs(comp.tree)))
             # If there are fewer than 3 shared leafs, return null
             if len(shared_leafs) < 3:
                 return
 
-            # Make a set of sets with the terminals for each internal node
-            ref_nodes = self._get_node_terminals(self.tree, shared_leafs)
-            comp_nodes = self._get_node_terminals(comp.tree, shared_leafs)
+            # Get the vector of pairwise distances for this bin
+            dists1 = [
+                self.distances[name1][name2]
+                for name1 in shared_leafs
+                for name2 in shared_leafs
+                if name1 < name2
+            ]
+            # And the comparitor
+            dists2 = [
+                comp.distances[name1][name2]
+                for name1 in shared_leafs
+                for name2 in shared_leafs
+                if name1 < name2
+            ]
 
-            n_shared = sum([
-                node in comp_nodes
-                for node in ref_nodes
-            ])
-            return n_shared * 2 / (len(ref_nodes) + len(comp_nodes))
+            # Calculate the spearman correlation
+            r = stats.spearmanr(dists1, dists2)
+            return r.statistic
 
         def _get_leafs(self, node: Tree):
             return [leaf.name for leaf in node.get_terminals()]
