@@ -2555,8 +2555,8 @@ def define_inspect_metagenome(
             """).batch(
                 per_total_or_aligned=mo.ui.dropdown(
                     label="Calculate Sequencing Depth Relative To:",
-                    options=["Pangenome-Aligned Reads", "All Reads"],
-                    value="Pangenome-Aligned Reads"
+                    options=["All Reads", "Pangenome-Aligned Reads"],
+                    value="All Reads"
                 ),
                 include_bins=mo.ui.multiselect(
                     label="Use Specific Bins (default: all):",
