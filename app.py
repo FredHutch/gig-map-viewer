@@ -3673,10 +3673,10 @@ def class_comparemetagenomemultiplegroups(
      - {single_bin_width}
      - {single_bin_height}
             """).batch(
-                select_single_bin=mo.ui.dropdown(
-                    label="Show Single Bin Across Groups:",
+                select_bins=mo.ui.multiselect(
+                    label="Show Bin(s) Across Groups:",
                     options=self.res['bin'].values,
-                    value=self.res['bin'].values[0]
+                    value=self.res['bin'].values[:1]
                 ),
                 single_bin_group_order=mo.ui.multiselect(
                     label="Group Order (deselect and reselect to reorder):",
@@ -3702,7 +3702,7 @@ def class_comparemetagenomemultiplegroups(
         def make_tertiary_plot(
             self,
             grouping_cname: str,
-            select_single_bin: str,
+            select_bins: str,
             single_bin_group_order: List[str],
             xaxis_label: str,
             single_bin_width: int,
@@ -3712,7 +3712,7 @@ def class_comparemetagenomemultiplegroups(
             plot_df = pd.DataFrame(
                 {
                     grouping_cname: self._groupings,
-                    select_single_bin: self.log_abund[select_single_bin]
+                    "bin_abund": self.log_abund[select_bins].sum(axis=1)
                 }
             ).dropna()
 
@@ -3721,13 +3721,14 @@ def class_comparemetagenomemultiplegroups(
                     plot_df[grouping_cname].isin(single_bin_group_order)
                 ],
                 x=grouping_cname,
-                y=select_single_bin,
+                y="bin_abund",
                 category_orders={
                     grouping_cname: single_bin_group_order
                 },
                 template="simple_white",
                 labels={
-                    grouping_cname: xaxis_label
+                    grouping_cname: xaxis_label,
+                    "bin_abund": ", ".join(select_bins)
                 },
                 width=single_bin_width,
                 height=single_bin_height
