@@ -3259,11 +3259,13 @@ def make_inspect_metagenome(
     InspectMetagenome,
     inspect_metagenome_datasets,
     make_metagenome,
+    mo,
 ):
-    inspect_metagenome = InspectMetagenome([
-        make_metagenome(metagenome_dataset)
-        for metagenome_dataset in inspect_metagenome_datasets
-    ])
+    with mo.status.spinner("Building Metagenome"):
+        inspect_metagenome = InspectMetagenome([
+            make_metagenome(metagenome_dataset)
+            for metagenome_dataset in inspect_metagenome_datasets
+        ])
     return (inspect_metagenome,)
 
 
