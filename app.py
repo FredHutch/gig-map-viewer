@@ -3693,7 +3693,7 @@ def class_comparemetagenometool(
 
         def calc_gene_annot_enrichment_single(self, phrase: str, bin_set: Set[str], bin_rank: Dict[str, int]):
             # Get the ranks of all bins that contain this phrase
-            bin_ranks = frozenset([bin_rank[bin] for bin in list(bin_set)])
+            bin_ranks = frozenset([bin_rank[bin] for bin in list(bin_set) if bin in bin_rank])
             other_ranks = frozenset(range(len(bin_rank))) - bin_ranks
 
             # Get the enrichment score and p-value
@@ -4281,31 +4281,36 @@ def _(
         **compare_metagenome_tool_tertiary_plot_args.value,
         **compare_metagenome_primary_args.value,
         **compare_metagenome_secondary_args.value
+
     )
     return
 
 
 @app.cell
-def _(
-    compare_metagenome_primary_args,
-    compare_metagenome_secondary_args,
-    compare_metagenome_tool,
-    compare_metagenome_tool_primary_plot_args,
-    compare_metagenome_tool_secondary_plot_args,
-    compare_metagenome_tool_tertiary_plot_args,
-):
-    gene_annot_df = compare_metagenome_tool.calc_gene_annot_enrichment(
-        **compare_metagenome_tool_primary_plot_args.value,
-        **compare_metagenome_tool_secondary_plot_args.value,
-        **compare_metagenome_tool_tertiary_plot_args.value,
-        **compare_metagenome_primary_args.value,
-        **compare_metagenome_secondary_args.value
+def _(compare_metagenome_primary_args, compare_metagenome_secondary_args, mo):
+    compare_metagenome_primary_args.value
+    compare_metagenome_secondary_args.value
+
+    run_calc_gene_annot_button = mo.ui.run_button(
+        label="Calculate Gene Annotation Enrichment"
     )
+    run_calc_gene_annot_button
+    return (run_calc_gene_annot_button,)
+
+
+@app.cell
+def _(compare_metagenome_tool, mo, run_calc_gene_annot_button):
+    if run_calc_gene_annot_button.value:
+        with mo.status.spinner("Calculating Gene Annotation Enrichment"):
+            gene_annot_df = compare_metagenome_tool.calc_gene_annot_enrichment()
+    else:
+        gene_annot_df = None
     return (gene_annot_df,)
 
 
 @app.cell
-def gene_annot_enrichment_args(compare_metagenome_tool):
+def gene_annot_enrichment_args(compare_metagenome_tool, gene_annot_df, mo):
+    mo.stop(gene_annot_df is None)
     compare_metagenome_tool_gene_annot_args = compare_metagenome_tool.gene_annot_enrichment_args()
     compare_metagenome_tool_gene_annot_args
     return (compare_metagenome_tool_gene_annot_args,)
