@@ -3638,7 +3638,7 @@ def class_comparemetagenometool(
                         if self._groupings.ndim == 2
                         else self._groupings
                     ),
-                    "bin_abund": self.log_abund[select_bins].sum(axis=1)
+                    "bin_abund": self.log_abund[select_bins].mean(axis=1)
                 }
             ).dropna()
 
