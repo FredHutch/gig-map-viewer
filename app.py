@@ -1409,10 +1409,9 @@ def _(
                     value=query_params.get(
                         "inspect_genomes_annotate_by",
                         (
-                            "organism_organismName"
-                            if "organism_organismName" in self.pg.adata.obs.columns.values
-                            else
-                            self.pg.adata.obs.index.name
+                            "averageNucleotideIdentity_bestAniMatch_organismName"
+                            if "averageNucleotideIdentity_bestAniMatch_organismName" in self.pg.adata.obs_keys()
+                            else 'None'
                         )
                     )
                 ),
@@ -3671,7 +3670,7 @@ def class_comparemetagenometool(
 
         def gene_annot_enrichment_args(self):
             return mo.md("""### Enriched Gene Annotation Phrases
-        
+
             - {min_n_bins}
             """).batch(
                 min_n_bins=mo.ui.number(label="Minimum Number of Bins:", value=2, start=1)
