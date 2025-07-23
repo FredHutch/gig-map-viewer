@@ -3491,10 +3491,14 @@ def class_comparemetagenometool(
             heatmap_width: int,
             heatmap_height: int,
             query: str,
-            include_groups: List[str],
             grouping_cname: str,
+            include_groups: List[str] = None,
+            ref_group: str = None,
+            comp_group: str = None,
             **kwargs
         ):
+            if include_groups is None:
+                include_groups = [ref_group, comp_group]
 
             # Optionally filter, and get only those groups which were selected
             obs = self._filtered_obs(query)
@@ -3584,13 +3588,24 @@ def class_comparemetagenometool(
             return plt.gca()
 
 
-        def tertiary_plot_args(self, include_groups: List[str], grouping_cname: str, **kwargs):
+        def tertiary_plot_args(
+            self,
+            grouping_cname: str,
+            include_groups: List[str] = None,
+            ref_group: str = None,
+            comp_group: str = None,
+            **kwargs
+        ):
+            if include_groups is None:
+                include_groups = [ref_group, comp_group]
+
             if self.res is None:
                 return
             return mo.md("""
      - {select_bins}
      - {single_bin_group_order}
      - {xaxis_label}
+     - {plot_type}
      - {single_bin_width}
      - {single_bin_height}
             """).batch(
@@ -3608,6 +3623,11 @@ def class_comparemetagenometool(
                     label="X-Axis Label:",
                     value=grouping_cname
                 ),
+                plot_type=mo.ui.dropdown(
+                    label="Plot Type",
+                    options=["Box", "Violin", "Strip"],
+                    value="Box"
+                ),
                 single_bin_height=mo.ui.number(
                     label="Figure Height",
                     start=1,
@@ -3624,6 +3644,7 @@ def class_comparemetagenometool(
             self,
             grouping_cname: str,
             select_bins: str,
+            plot_type: str,
             single_bin_group_order: List[str],
             xaxis_label: str,
             single_bin_width: int,
@@ -3641,7 +3662,7 @@ def class_comparemetagenometool(
                 }
             ).dropna()
 
-            fig = px.box(
+            fig = getattr(px, plot_type.lower())(
                 plot_df.loc[
                     plot_df[grouping_cname].isin(single_bin_group_order)
                 ],
@@ -3720,11 +3741,167 @@ def class_comparemetagenometool(
 
 
 @app.cell
+def _(mo):
+    get_grouping_cname, set_grouping_cname = mo.state("specimen_clusters")
+    return get_grouping_cname, set_grouping_cname
+
+
+@app.cell
+def _(
+    CompareMetagenomeTool,
+    get_grouping_cname,
+    mo,
+    pd,
+    set_grouping_cname,
+    stats,
+):
+    class CompareMetagenomeTwoGroups(CompareMetagenomeTool):
+        name = "Compare Two Groups - Test Each Organism"
+        description = """
+        Test each organism individually for differences in abundance between two specified group.
+        Can use either the t-test (parametric) or Mann-Whitney U (non-parametric) tests.
+        Does not account for any interaction or correlation between organisms.
+        Results are presented in terms of a single p-value for each organism which
+        indicates whether there is a difference between any of the groups.
+        """
+        _mean_log_rpkm_prefix = "mean_log_rpkm - "
+        _median_log_rpkm_prefix = "median_log_rpkm - "
+
+        def primary_args(self):
+            return mo.md(
+                """
+    - {test}
+    - {grouping_cname}
+    - {query}
+                """
+            ).batch(
+                test=mo.ui.dropdown(
+                    label="Statistical Test",
+                    options=["T-test", "Mann Whitney U"],
+                    value="Mann Whitney U"
+                ),
+                query=mo.ui.text(
+                    label="Filter Specimens (optional):",
+                    placeholder="e.g. cname == 'Group A'",
+                    full_width=True
+                ),
+                grouping_cname=mo.ui.dropdown(
+                    label="Compare Groups Defined By:",
+                    options=self.adata.obs.columns.values,
+                    value=get_grouping_cname(),
+                    on_change=set_grouping_cname
+                )
+            )
+
+        def secondary_args(self, grouping_cname: str, query: str, **kwargs):
+            try:
+                self._filtered_obs(query)
+            except ValueError:
+                return mo.md(f"Invalid query syntax: {query}").batch()
+
+            # Get the groups present in the selected column
+            groups = self._filtered_obs(query)[grouping_cname].unique()
+
+            return mo.md("""
+    - {ref_group}
+    - {comp_group}
+            """).batch(
+                ref_group=mo.ui.dropdown(
+                    label="Reference Group:",
+                    options=groups,
+                    value=groups[0]
+                ),
+                comp_group=mo.ui.dropdown(
+                    label="Comparison Group:",
+                    options=groups,
+                    value=groups[1] if len(groups) > 1 else groups[0]
+                )
+            )
+
+        def run_analysis(
+            self,
+            query: str,
+            grouping_cname: str,
+            test: str,
+            ref_group: str,
+            comp_group: str
+        ):
+            # Make sure that different groups were selected
+            if ref_group == comp_group:
+                return mo.md("Must select different groups to compare")
+
+            # Optionally filter, and get only those groups which were selected
+            obs = self._filtered_obs(query)
+            self._groupings = obs.loc[obs[grouping_cname].isin([ref_group, comp_group])][grouping_cname]
+            self.ref_group = obs.index.values[obs[grouping_cname] == ref_group]
+            self.comp_group = obs.index.values[obs[grouping_cname] == comp_group]
+
+            if test == "T-test":
+                self.res = self._compare_groups("ttest_ind")
+            elif test == "Mann Whitney U":
+                self.res = self._compare_groups("mannwhitneyu")
+            else:
+                raise Exception(f"Unexpected test {test}")
+
+            self._ready_to_plot = True
+
+        def _compare_groups(self, test_name: str):
+            # Compute the results
+            df = pd.DataFrame([
+                dict(
+                    bin=bin,
+                    mean_log_rpkm=bin_log_rpkm.mean(),
+                    median_log_rpkm=bin_log_rpkm.median(),
+                    **self._compare_groups_single(bin_log_rpkm, test_name),
+                    **self._group_stats(bin_log_rpkm),
+                )
+                for bin, bin_log_rpkm in self.log_abund.items()
+                if not pd.isnull(bin) and bin != "nan"
+            ]).sort_values(by="pvalue")
+
+            # Calculate the log2 fold difference between every pair of groups
+            df = df.assign(**{
+                f"log2_fold_difference - {cname1[len(self._mean_log_rpkm_prefix):]} / {cname2[len(self._mean_log_rpkm_prefix):]}": df[cname1] - df[cname2]
+                for cname1 in df.columns.values
+                if cname1.startswith(self._mean_log_rpkm_prefix)
+                for cname2 in df.columns
+                if cname2.startswith(self._mean_log_rpkm_prefix)
+                if cname1 != cname2
+            })
+            return df
+
+        def _group_stats(self, bin_log_rpkm: pd.Series):
+            return {
+                kw: val
+                for group_name, group_vals in bin_log_rpkm.groupby(self._groupings)
+                for kw, val in {
+                    self._mean_log_rpkm_prefix + str(group_name): group_vals.mean(),
+                    self._median_log_rpkm_prefix + str(group_name): group_vals.median()
+                }.items()
+            }
+
+        def _compare_groups_single(self, bin_log_rpkm: pd.Series, test_name: str):
+            try:
+                return dict(zip(
+                    ["statistic", "pvalue"],
+                    getattr(stats, test_name)(
+                        bin_log_rpkm.loc[self.ref_group],
+                        bin_log_rpkm.loc[self.comp_group]
+                    )
+                ))
+            except ValueError:
+                return dict(statistic=None, pvalue=None)
+    return (CompareMetagenomeTwoGroups,)
+
+
+@app.cell
 def class_comparemetagenomemultiplegroups(
     CompareMetagenomeTool,
     List,
+    get_grouping_cname,
     mo,
     pd,
+    set_grouping_cname,
     stats,
 ):
     class CompareMetagenomeMultipleGroups(CompareMetagenomeTool):
@@ -3760,7 +3937,8 @@ def class_comparemetagenomemultiplegroups(
                 grouping_cname=mo.ui.dropdown(
                     label="Compare Groups Defined By:",
                     options=self.adata.obs.columns.values,
-                    value="specimen_clusters"
+                    value=get_grouping_cname(),
+                    on_change=set_grouping_cname
                 )
             )
 
@@ -3818,6 +3996,7 @@ def class_comparemetagenomemultiplegroups(
                     **self._group_stats(bin_log_rpkm),
                 )
                 for bin, bin_log_rpkm in self.log_abund.items()
+                if not pd.isnull(bin) and bin != "nan"
             ]).sort_values(by="pvalue")
 
             # Calculate the log2 fold difference between every pair of groups
@@ -3874,9 +4053,11 @@ def class_comparemetagenometwogroups(
     OrdinalEncoder,
     confusion_matrix,
     ensemble,
+    get_grouping_cname,
     mo,
     pd,
     px,
+    set_grouping_cname,
     train_test_split,
 ):
     class CompareMetagenomeClassifyGroupsML(CompareMetagenomeTool):
@@ -3925,7 +4106,8 @@ def class_comparemetagenometwogroups(
                 grouping_cname=mo.ui.dropdown(
                     label="Compare Groups Defined By:",
                     options=self.adata.obs.columns.values,
-                    value="specimen_clusters"
+                    value=get_grouping_cname(),
+                    on_change=set_grouping_cname
                 )
             )
 
@@ -4105,6 +4287,7 @@ def _(
     CompareMetagenomeClassifyGroupsML,
     CompareMetagenomeMultipleGroups,
     CompareMetagenomeTool,
+    CompareMetagenomeTwoGroups,
     List,
     mo,
 ):
@@ -4113,6 +4296,7 @@ def _(
 
         def __init__(self):
             self.tools = [
+                CompareMetagenomeTwoGroups,
                 CompareMetagenomeMultipleGroups,
                 CompareMetagenomeClassifyGroupsML,
             ]
