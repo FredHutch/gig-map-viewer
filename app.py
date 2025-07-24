@@ -1411,7 +1411,7 @@ def _(
                         (
                             "averageNucleotideIdentity_bestAniMatch_organismName"
                             if "averageNucleotideIdentity_bestAniMatch_organismName" in self.pg.adata.obs_keys()
-                            else 'None'
+                            else self.pg.adata.obs.reset_index().columns.values[0]
                         )
                     )
                 ),
@@ -2424,6 +2424,12 @@ def define_inspect_metagenome(
     copy,
     defaultdict,
     format_log_ticks,
+    get_ima_annot_specimens_by,
+    get_ima_height,
+    get_ima_label_specimens_by,
+    get_ima_show_bin_labels,
+    get_ima_show_specimen_labels,
+    get_ima_width,
     groupby,
     lru_cache,
     mo,
@@ -2431,6 +2437,12 @@ def define_inspect_metagenome(
     pd,
     plt,
     px,
+    set_ima_annot_specimens_by,
+    set_ima_height,
+    set_ima_label_specimens_by,
+    set_ima_show_bin_labels,
+    set_ima_show_specimen_labels,
+    set_ima_width,
     sklearn,
     sns,
     sort_axis,
@@ -2753,27 +2765,34 @@ def define_inspect_metagenome(
      - {width}
             """).batch(
                 show_specimen_labels=mo.ui.checkbox(
-                    value=False
+                    value=get_ima_show_specimen_labels(),
+                    on_change=set_ima_show_specimen_labels
                 ),
                 label_specimens_by=mo.ui.dropdown(
-                    options=self.obs_cnames
+                    options=self.obs_cnames,
+                    value=get_ima_label_specimens_by(),
+                    on_change=set_ima_label_specimens_by
                 ),
                 annot_specimens_by=mo.ui.multiselect(
                     options=self.obs_cnames,
-                    value=[]
+                    value=get_ima_annot_specimens_by(),
+                    on_change=set_ima_annot_specimens_by
                 ),
                 show_bin_labels=mo.ui.checkbox(
-                    value=True
+                    value=get_ima_show_bin_labels(),
+                    on_change=set_ima_show_bin_labels
                 ),
                 height=mo.ui.number(
                     label="Figure Height",
                     start=1,
-                    value=8
+                    value=get_ima_height(),
+                    on_change=set_ima_height
                 ),
                 width=mo.ui.number(
                     label="Figure Width",
                     start=1,
-                    value=8
+                    value=get_ima_width(),
+                    on_change=set_ima_width
                 )
             )
 
@@ -3251,6 +3270,30 @@ def define_inspect_metagenome(
 
         return pd.DataFrame(colors_df), cmap
     return InspectMetagenome, InspectMetagenomeAnalysis, make_df_cmap
+
+
+@app.cell
+def _(mo):
+    get_ima_show_specimen_labels, set_ima_show_specimen_labels = mo.state(False)
+    get_ima_label_specimens_by, set_ima_label_specimens_by = mo.state(None)
+    get_ima_annot_specimens_by, set_ima_annot_specimens_by = mo.state([])
+    get_ima_show_bin_labels, set_ima_show_bin_labels = mo.state(True)
+    get_ima_height, set_ima_height = mo.state(8)
+    get_ima_width, set_ima_width = mo.state(8)
+    return (
+        get_ima_annot_specimens_by,
+        get_ima_height,
+        get_ima_label_specimens_by,
+        get_ima_show_bin_labels,
+        get_ima_show_specimen_labels,
+        get_ima_width,
+        set_ima_annot_specimens_by,
+        set_ima_height,
+        set_ima_label_specimens_by,
+        set_ima_show_bin_labels,
+        set_ima_show_specimen_labels,
+        set_ima_width,
+    )
 
 
 @app.cell
@@ -3788,7 +3831,11 @@ def _(
                 grouping_cname=mo.ui.dropdown(
                     label="Compare Groups Defined By:",
                     options=self.adata.obs.columns.values,
-                    value=get_grouping_cname(),
+                    value=(
+                        get_grouping_cname()
+                        if get_grouping_cname() in self.adata.obs.columns.values
+                        else self.adata.obs.columns.values[-1]
+                    ),
                     on_change=set_grouping_cname
                 )
             )
