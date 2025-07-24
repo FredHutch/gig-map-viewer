@@ -3153,7 +3153,9 @@ def define_inspect_metagenome(
                 color=cat2,
                 template="simple_white",
                 barmode=barmode,
-                title=f"Chi2 p-value: {pvalue}"
+                title=f"Chi2 p-value: {pvalue}",
+                width=width,
+                height=height
             )
             return fig
 
