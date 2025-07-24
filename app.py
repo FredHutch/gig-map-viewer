@@ -2640,7 +2640,7 @@ def define_inspect_metagenome(
             """).batch(
                 per_total_or_aligned=mo.ui.dropdown(
                     label="Calculate Sequencing Depth Relative To:",
-                    options=["All Reads", "Pangenome-Aligned Reads"],
+                    options=["All Reads", "Pangenome-Aligned Reads"] + list(self.adata.var_names),
                     value="All Reads"
                 ),
                 include_bins=mo.ui.multiselect(
@@ -2691,9 +2691,16 @@ def define_inspect_metagenome(
             self.per_total_or_aligned = per_total_or_aligned
             if self.per_total_or_aligned == "Pangenome-Aligned Reads":
                 _abund = self.adata.to_df()
-            else:
-                assert self.per_total_or_aligned == "All Reads"
+            elif self.per_total_or_aligned == "All Reads":
                 _abund = self.adata.to_df(layer="rpkm_total")
+            else:
+                assert self.per_total_or_aligned in self.adata.var_names
+                _abund = self.adata.to_df(layer="rpkm_total")
+                _abund = (
+                    _abund
+                    .div(_abund[self.per_total_or_aligned], axis=0)
+                    .drop(columns=[self.per_total_or_aligned])
+                )
 
             # Optionally filter bins
             if include_bins is not None and len(include_bins) > 0:
