@@ -2412,6 +2412,18 @@ def _(np):
     return (format_log_ticks,)
 
 
+@app.cell
+def _(mo):
+    get_cluster_args_cat1, set_cluster_args_cat1 = mo.state("specimen_clusters")
+    get_cluster_args_cat2, set_cluster_args_cat2 = mo.state(None)
+    return (
+        get_cluster_args_cat1,
+        get_cluster_args_cat2,
+        set_cluster_args_cat1,
+        set_cluster_args_cat2,
+    )
+
+
 @app.cell(hide_code=True)
 def define_inspect_metagenome(
     AnnData,
@@ -2424,6 +2436,8 @@ def define_inspect_metagenome(
     copy,
     defaultdict,
     format_log_ticks,
+    get_cluster_args_cat1,
+    get_cluster_args_cat2,
     get_ima_annot_specimens_by,
     get_ima_height,
     get_ima_label_specimens_by,
@@ -2437,6 +2451,8 @@ def define_inspect_metagenome(
     pd,
     plt,
     px,
+    set_cluster_args_cat1,
+    set_cluster_args_cat2,
     set_ima_annot_specimens_by,
     set_ima_height,
     set_ima_label_specimens_by,
@@ -3011,11 +3027,22 @@ def define_inspect_metagenome(
                 cat1=mo.ui.dropdown(
                     label="Annotation 1:",
                     options=self.obs_cnames,
-                    value="specimen_clusters"
+                    value=(
+                        get_cluster_args_cat1()
+                        if get_cluster_args_cat1() in self.obs_cnames
+                        else self.obs_cnames[-1]
+                    ),
+                    on_change=set_cluster_args_cat1
                 ),
                 cat2=mo.ui.dropdown(
                     label="Annotation 2:",
-                    options=self.obs_cnames
+                    options=self.obs_cnames,
+                    value=(
+                        get_cluster_args_cat2()
+                        if get_cluster_args_cat2() in self.obs_cnames
+                        else None
+                    ),
+                    on_change=set_cluster_args_cat2
                 )
             )
 
