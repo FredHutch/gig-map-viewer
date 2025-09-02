@@ -1220,7 +1220,7 @@ def _(
 
             # First get the top bins selected based on bin size
             if top_n_bins is not None and top_n_bins > 0:
-                bins_to_plot = list(self.pg.adata.var.head(top_n_bins).index.values)
+                bins_to_plot = list(self.pg.adata.var.sort_values(by="n_genes", ascending=False).head(top_n_bins).index.values)
             else:
                 bins_to_plot = []
 
