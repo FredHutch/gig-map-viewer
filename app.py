@@ -748,7 +748,7 @@ def _(
     return (Phylogeny,)
 
 
-@app.cell(hide_code=True)
+@app.cell
 def _(
     AnnData,
     DataPortalAssetNotFound,
@@ -756,6 +756,7 @@ def _(
     Dict,
     List,
     Phylogeny,
+    Set,
     Tuple,
     cluster,
     defaultdict,
@@ -876,6 +877,12 @@ def _(
                 for bin in self.adata.var_names
             })
 
+            # Annotate each bin by the accuracy of detection using clade-based analysis
+            self.adata.var["clade_accuracy"] = pd.Series({
+                bin: self._compute_clade_accuracy(bin)
+                for bin in self.adata.var_names
+            })
+
             # Annotate each genome by the weighted average of the monophyly score for each
             # bin it contains (weighted by the bin size)
             self.adata.obs["monophyly"] = pd.Series({
@@ -894,13 +901,18 @@ def _(
 
         def _compute_monophyly(self, bin: str):
 
-            # Get the set of genomes which contain this bin
-            genomes = set(self.adata.obs_names.values[self.adata.to_df(layer="present")[bin] == 1])
-            assert len(genomes) == self.adata.to_df(layer="present")[bin].sum(), bin
+            # Get the larger value for monophyly -- either the genomes which contain the bin,
+            # or those which do not contain the bin
+            return max(
+                self._compute_monophyly_single(set(self.adata.obs_names.values[self.adata.to_df(layer="present")[bin] == 1])),
+                self._compute_monophyly_single(set(self.adata.obs_names.values[self.adata.to_df(layer="present")[bin] == 0]))
+            )
+
+        def _compute_monophyly_single(self, genomes: Set[str]):
 
             # If there are none, stop
             if len(genomes) == 0:
-                return
+                return 1
 
             # If there is only one, return 1
             elif len(genomes) == 1:
@@ -913,9 +925,47 @@ def _(
                     for clade in self.clades
                     if genomes <= clade and len(clade) > 0
                 ])
-                # assert len(genomes) < 3, (genomes, smallest_clade)
+
                 # Return the proportion of genomes in that clade which contain the bin
                 return len(genomes) / smallest_clade
+
+        def _compute_clade_accuracy(self, bin: str):
+
+            # Get the set of genomes which contain this bin
+            bin_genomes = set(self.adata.obs_names.values[self.adata.to_df(layer="present")[bin] == 1])
+            assert len(bin_genomes) == self.adata.to_df(layer="present")[bin].sum(), bin
+
+            # Get all of the genomes
+            all_genomes = set(self.adata.obs_names.values)
+
+            # If there are none, stop
+            if len(bin_genomes) == 0:
+                return
+
+            # If there is only one, return 1
+            elif len(bin_genomes) == 1:
+                return 1
+
+            # If there are more, find the clade with the highest accuracy for prediction
+            else:
+                return np.max([
+                    self._compute_clade_accuracy_single(bin_genomes, clade, all_genomes)
+                    for clade in self.clades
+                    if (clade & bin_genomes)
+                ])
+
+        @staticmethod
+        def _compute_clade_accuracy_single(target: Set[str], query: Set[str], total: Set[str]):
+            """
+            Compute the accuracy with which a query set predicts a target.
+            Accuracy = (TP + TN) / (TP + TN + FP + FN)
+            """
+            TP = len(target & query)
+            TN = len((total - target) & (total - query))
+            FP = len(query - target)
+            FN = len((total - query) & target)
+
+            return (TP + TN) / (TP + TN + FP + FN)
 
         def index_tree(self):
             """Get all of the possible monophyletic groupings of genomes, based on that binary tree."""
@@ -1604,7 +1654,24 @@ def _(
                 )
                 return fig
 
-        def rarefaction_curve(self) -> Tuple[go.Figure, bytes]:
+        def rarefaction_curve_args(self):
+            return mo.md("""
+            ### Genome Content - Collection Curve
+
+            Simulate the number of unique genes would be recovered based on different numbers of genomes
+            being selected randomly from the complete set.
+
+            - {max_genomes}
+            """).batch(
+                max_genomes=mo.ui.number(
+                    label="Maximum # of Genomes:",
+                    start=1,
+                    value=min(250, self.pg.adata.shape[0]),
+                    step=1
+                )
+            )
+
+        def rarefaction_curve(self, max_genomes: int) -> Tuple[go.Figure, bytes]:
 
             # Table of presence/absence for every bin in every genome
             present = self.pg.adata.to_df(layer="present")
@@ -1624,7 +1691,7 @@ def _(
                         for rep in range(100)
                     ]).describe()
                 )
-                for n_genomes in range(1, present.shape[0])
+                for n_genomes in range(1, max_genomes)
             ])
 
             fig = go.Figure(
@@ -1664,6 +1731,47 @@ def _(
             )
 
             return fig
+
+        def monophyly_curve_args(self):
+
+            return mo.md("""
+            ### Cladistic Monophyly Per Gene
+
+            Summarize the degree to which each gene can be represented by a single monophyletic clade.
+            This provides a proxy for how accurately a cladistic approach could identify the presence
+            of a particular gene in a genome or metagenome.
+
+            - {nbins}
+            - {log_y}
+            """).batch(
+                nbins=mo.ui.number(
+                    label="Number of Bins:",
+                    value=40,
+                    start=2,
+                    step=1
+                ),
+                log_y=mo.ui.checkbox(
+                    label="Log Y:",
+                    value=True
+                )
+            )
+
+        def monophyly_curve(self, nbins: int, log_y: bool):
+
+            counts, bins = np.histogram(
+                self.pg.adata.var["monophyly"],
+                bins=nbins,
+                weights=self.pg.adata.var["n_genes"]
+            )
+            bins = 0.5 * (bins[:-1] + bins[1:])
+        
+            return px.bar(
+                x=bins,
+                y=counts,
+                labels={'x':"Monophyly Score", 'y':'Number of Genes'},
+                template="simple_white",
+                log_y=log_y
+            )
 
 
     def sort_axis(df: pd.DataFrame, metric="jaccard", method="average"):
@@ -1727,7 +1835,27 @@ def _(inspect_pangenome, mo):
 
 @app.cell
 def _(inspect_pangenome):
-    inspect_pangenome.rarefaction_curve()
+    rarefaction_curve_args = inspect_pangenome.rarefaction_curve_args()
+    rarefaction_curve_args
+    return (rarefaction_curve_args,)
+
+
+@app.cell
+def _(inspect_pangenome, rarefaction_curve_args):
+    inspect_pangenome.rarefaction_curve(**rarefaction_curve_args.value)
+    return
+
+
+@app.cell
+def _(inspect_pangenome):
+    monophyly_curve_args = inspect_pangenome.monophyly_curve_args()
+    monophyly_curve_args
+    return (monophyly_curve_args,)
+
+
+@app.cell
+def _(inspect_pangenome, monophyly_curve_args):
+    inspect_pangenome.monophyly_curve(**monophyly_curve_args.value)
     return
 
 
