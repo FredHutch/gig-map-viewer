@@ -260,7 +260,8 @@ def _(id_to_name, mo, name_to_id, projects, query_params):
     project_ui = mo.ui.dropdown(
         label="Select Project:",
         value=id_to_name(projects, query_params.get("project")),
-        options=name_to_id(projects)
+        options=name_to_id(projects),
+        searchable=True
     )
     project_ui
     return (project_ui,)
@@ -293,7 +294,8 @@ def _(id_to_name, mo, name_to_id, pangenome_datasets, query_params):
     pangenome_dataset_ui = mo.ui.dropdown(
         label="Select Pangenome:",
         value=id_to_name(pangenome_datasets, query_params.get("inspect_pangenome")),
-        options=name_to_id(pangenome_datasets)
+        options=name_to_id(pangenome_datasets),
+        searchable=True
     )
     pangenome_dataset_ui
     return (pangenome_dataset_ui,)
@@ -1137,11 +1139,13 @@ def _(mo):
     return Patch, make_subplots, np, plt, px, sns
 
 
-@app.cell(hide_code=True)
+@app.cell
 def _(
     DataPortalDataset,
     Pangenome,
+    Tuple,
     cluster,
+    go,
     make_pangenome,
     make_subplots,
     mo,
@@ -1414,7 +1418,8 @@ def _(
                             if "averageNucleotideIdentity_bestAniMatch_organismName" in self.pg.adata.obs_keys()
                             else self.pg.adata.obs.reset_index().columns.values[0]
                         )
-                    )
+                    ),
+                    searchable=True
                 ),
                 label_offset_x=mo.ui.number(value=0.),
                 label_offset_y=mo.ui.number(value=0.5),
@@ -1698,7 +1703,8 @@ def _(DataPortalDataset, Pangenome, make_pangenome, mo, query_params):
                 bin_id=mo.ui.dropdown(
                     label="Display:",
                     options=sorted(self.pg.adata.var_names, key=lambda bin_id: int(bin_id.split(" ")[-1])),
-                    value="Bin 1"
+                    value="Bin 1",
+                    searchable=True
                 ),
                 genome_columns=mo.ui.multiselect(
                     label="Show Columns:",
@@ -1886,7 +1892,8 @@ def _(
                         "averageNucleotideIdentity_bestAniMatch_organismName"
                         if "averageNucleotideIdentity_bestAniMatch_organismName" in self.pg.adata.obs_keys()
                         else 'None'
-                    )
+                    ),
+                    searchable=True
                 ),
                 height=mo.ui.number(
                     label="Figure Height:",
@@ -2057,12 +2064,14 @@ def _(
                 ref_bin=mo.ui.dropdown(
                     label="Reference Bin:",
                     options=bins,
-                    value=bins[0]
+                    value=bins[0],
+                    searchable=True
                 ),
                 comp_bin=mo.ui.dropdown(
                     label="Comparison Bin:",
                     options=bins,
-                    value=bins[1]
+                    value=bins[1],
+                    searchable=True
                 )
             )
 
@@ -2795,7 +2804,8 @@ def define_inspect_metagenome(
                 label_specimens_by=mo.ui.dropdown(
                     options=self.obs_cnames,
                     value=get_ima_label_specimens_by(),
-                    on_change=set_ima_label_specimens_by
+                    on_change=set_ima_label_specimens_by,
+                    searchable=True
                 ),
                 annot_specimens_by=mo.ui.multiselect(
                     options=self.obs_cnames,
@@ -2909,10 +2919,12 @@ def define_inspect_metagenome(
      - {width}
             """).batch(
                 label_specimens_by=mo.ui.dropdown(
-                    options=self.obs_cnames
+                    options=self.obs_cnames,
+                    searchable=True
                 ),
                 color_specimens_by=mo.ui.dropdown(
-                    options=self.obs_cnames_and_bin_names
+                    options=self.obs_cnames_and_bin_names,
+                    searchable=True
                 ),
                 hover_data=mo.ui.multiselect(
                     options=self.obs_cnames,
@@ -3033,7 +3045,8 @@ def define_inspect_metagenome(
                         if get_cluster_args_cat1() in self.obs_cnames
                         else self.obs_cnames[-1]
                     ),
-                    on_change=set_cluster_args_cat1
+                    on_change=set_cluster_args_cat1,
+                    searchable=True
                 ),
                 cat2=mo.ui.dropdown(
                     label="Annotation 2:",
@@ -3043,7 +3056,8 @@ def define_inspect_metagenome(
                         if get_cluster_args_cat2() in self.obs_cnames
                         else None
                     ),
-                    on_change=set_cluster_args_cat2
+                    on_change=set_cluster_args_cat2,
+                    searchable=True
                 )
             )
 
@@ -3191,7 +3205,8 @@ def define_inspect_metagenome(
                 x=mo.ui.dropdown(
                     label="X-axis:",
                     options=self.obs_cnames,
-                    value="specimen_clusters"
+                    value="specimen_clusters",
+                    searchable=True
                 ),
                 y=mo.ui.dropdown(
                     label="Y-axis:",
@@ -3202,11 +3217,13 @@ def define_inspect_metagenome(
                         .dropna()
                         .sort_values(by="pvalue")
                         .index.values[0]
-                    )
+                    ),
+                    searchable=True
                 ),
                 hue=mo.ui.dropdown(
                     label="Hue:",
-                    options=self.obs_cnames
+                    options=self.obs_cnames,
+                    searchable=True
                 ),
                 height=mo.ui.number(
                     label="Height:",
@@ -3542,7 +3559,8 @@ def class_comparemetagenometool(
                     value=False
                 ),
                 heatmap_label_specimens_by=mo.ui.dropdown(
-                    options=self.obs_cnames
+                    options=self.obs_cnames,
+                    searchable=True
                 ),
                 heatmap_annot_specimens_by=mo.ui.multiselect(
                     options=self.obs_cnames,
@@ -3873,7 +3891,8 @@ def _(
                         if get_grouping_cname() in self.adata.obs.columns.values
                         else self.adata.obs.columns.values[-1]
                     ),
-                    on_change=set_grouping_cname
+                    on_change=set_grouping_cname,
+                    searchable=True
                 )
             )
 
@@ -3893,12 +3912,14 @@ def _(
                 ref_group=mo.ui.dropdown(
                     label="Reference Group:",
                     options=groups,
-                    value=groups[0]
+                    value=groups[0],
+                    searchable=True
                 ),
                 comp_group=mo.ui.dropdown(
                     label="Comparison Group:",
                     options=groups,
-                    value=groups[1] if len(groups) > 1 else groups[0]
+                    value=groups[1] if len(groups) > 1 else groups[0],
+                    searchable=True
                 )
             )
 
@@ -4022,7 +4043,8 @@ def class_comparemetagenomemultiplegroups(
                     label="Compare Groups Defined By:",
                     options=self.adata.obs.columns.values,
                     value=get_grouping_cname(),
-                    on_change=set_grouping_cname
+                    on_change=set_grouping_cname,
+                    searchable=True
                 )
             )
 
@@ -4173,7 +4195,8 @@ def class_comparemetagenometwogroups(
                 classifier=mo.ui.dropdown(
                     label="Classifier:",
                     options=self._options,
-                    value="RandomForestClassifier"
+                    value="RandomForestClassifier",
+                    searchable=True
                 ),
                 training_prop=mo.ui.number(
                     label="Training Proportion:",
@@ -4191,7 +4214,8 @@ def class_comparemetagenometwogroups(
                     label="Compare Groups Defined By:",
                     options=self.adata.obs.columns.values,
                     value=get_grouping_cname(),
-                    on_change=set_grouping_cname
+                    on_change=set_grouping_cname,
+                    searchable=True
                 )
             )
 
@@ -4392,7 +4416,8 @@ def _(
                     tool.name
                     for tool in self.tools                    
                 ],
-                value=self.tools[0].name
+                value=self.tools[0].name,
+                searchable=True
             )
 
         def make_tool(self, tool_name: str):
