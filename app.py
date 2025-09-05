@@ -1604,6 +1604,66 @@ def _(
                 )
                 return fig
 
+        def rarefaction_curve(self) -> Tuple[go.Figure, bytes]:
+
+            # Table of presence/absence for every bin in every genome
+            present = self.pg.adata.to_df(layer="present")
+
+            # Get the number of genes per bin
+            n_genes = self.pg.adata.var["n_genes"]
+
+            # Add that number to the table
+            df = present * n_genes
+
+            # Simulate the number of genes recovered with different numbers of subsampled
+            rf = pd.DataFrame([
+                dict(
+                    n_genomes=n_genomes,
+                    **pd.Series([
+                        df.sample(n_genomes).max().sum()
+                        for rep in range(100)
+                    ]).describe()
+                )
+                for n_genomes in range(1, present.shape[0])
+            ])
+
+            fig = go.Figure(
+                data=[
+                    go.Scatter(
+                        x=rf["n_genomes"],
+                        y=rf["50%"],
+                        mode="lines",
+                        line=dict(color='rgb(31, 119, 180)'),
+                        showlegend=False
+                    ),
+                    go.Scatter(
+                        x=rf['n_genomes'],
+                        y=rf['75%'],
+                        mode='lines',
+                        marker=dict(color="#444"),
+                        line=dict(width=0),
+                        showlegend=False
+                    ),
+                    go.Scatter(
+                        x=rf['n_genomes'],
+                        y=rf['25%'],
+                        marker=dict(color="#444"),
+                        line=dict(width=0),
+                        mode='lines',
+                        fillcolor='rgba(68, 68, 68, 0.3)',
+                        fill='tonexty',
+                        showlegend=False
+                    )
+                ],
+                layout=dict(
+                    template="simple_white",
+                    yaxis_title_text="Number of Genes",
+                    xaxis_title_text="Number of Genomes",
+                    title_text="Rarefaction Analysis"
+                )
+            )
+
+            return fig
 
 
     def sort_axis(df: pd.DataFrame, metric="jaccard", method="average"):
@@ -1662,6 +1722,12 @@ def _(inspect_pangenome, mo):
         label="Pangenome Genome Summary Table",
         filename=f"{inspect_pangenome.pg.ds.name} - Genome Summary Table.csv"
     )
+    return
+
+
+@app.cell
+def _(inspect_pangenome):
+    inspect_pangenome.rarefaction_curve()
     return
 
 
