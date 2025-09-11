@@ -980,12 +980,14 @@ def _(
                 if cn.get_count() > 1
             ]
 
-        def _make_adata(self) -> AnnData:
+        def _make_adata(self, min_reads: int) -> AnnData:
 
             # The variable annotations includes the number of genes for each variable
             var = pd.DataFrame(dict(
                 n_genes=pd.Series({bin: d.shape[0] for bin, d in self.bin_contents.items()})
             ))
+            # Only keep bins with genes
+            var = var.query("n_genes > 0")
 
             # Read in the table listing which genomes contain which bins
             _genome_contents = self.read_csv(
@@ -1764,7 +1766,7 @@ def _(
                 weights=self.pg.adata.var["n_genes"]
             )
             bins = 0.5 * (bins[:-1] + bins[1:])
-        
+
             return px.bar(
                 x=bins,
                 y=counts,
@@ -2427,6 +2429,18 @@ def _(inspect_metagenome_datasets, mo):
 
 
 @app.cell
+def _(mo):
+    min_reads_per_metagenome_ui = mo.ui.number(
+        label="Minimum # of Aligned Reads per Metagenome:",
+        value=10000,
+        step=1,
+        start=1
+    )
+    min_reads_per_metagenome_ui
+    return (min_reads_per_metagenome_ui,)
+
+
+@app.cell
 def define_metagenome_class(
     AnnData,
     DataPortalDataset,
@@ -2434,7 +2448,6 @@ def define_metagenome_class(
     List,
     Pangenome,
     cluster,
-    mo,
     np,
     pangenome_datasets,
     pd,
@@ -2458,9 +2471,9 @@ def define_metagenome_class(
         clades: List[set]
         pg: Pangenome
 
-        def __init__(self, ds: DataPortalDataset):
+        def __init__(self, ds: DataPortalDataset, min_reads: int):
             self.ds = ds
-            self.adata = self._make_adata()
+            self.adata = self._make_adata(min_reads)
 
             # Get the pangenome that was used for this analysis
             pg_dataset_id = (
@@ -2538,6 +2551,23 @@ def define_metagenome_class(
                 for bin_id, bin_contents in self.pg.bin_contents.items()
             }
 
+        @staticmethod
+        def calc_copy_number(rpk: pd.Series, weights: pd.Series):
+            """
+            Divide the RPK by the weighted median value.
+            """
+            # Sort the weights by the rpk, and then take the cumulative sum
+            cumsum = weights.reindex(index=rpk.loc[rpk > 0].dropna().sort_values().index).cumsum()
+            cumsum = cumsum / cumsum.max()
+
+            assert cumsum.shape[0] > 0, (rpk, rpk.loc[rpk > 0])
+
+            # Find the bin ID which spans the median value
+            median_bin = cumsum.loc[cumsum > 0.5].index.values[0]
+
+            # Return the RPK divided by that median value
+            return rpk / rpk.loc[median_bin]
+
         def calculate_relative_sequencing_depth(self):
 
             # Annotation of all genes - including 'bin' and 'length'
@@ -2555,6 +2585,15 @@ def define_metagenome_class(
                 (self.adata.var["combined_length_aa"] * 3. / 1000.)
             )
 
+            # Calculate the "copy number" as the RPK divided by the median RPK
+            # (where the median is weighted by bin size)
+            self.adata.layers["copy_number"] = (
+                self.adata.to_df(layer="rpk").apply(
+                    lambda r: self.calc_copy_number(r, self.adata.var["combined_length_aa"]),
+                    axis=1
+                )
+            )
+
             # Adjusted for sequencing depth - RPKM (reads per kilobase per million reads)
             # Calculated both with total reads, and with aligned reads
             self.adata.layers["rpkm_total"] = (
@@ -2565,13 +2604,19 @@ def define_metagenome_class(
                 / (self.adata.obs["genes:aligned_reads"] / 1e6)
             ).T
 
-        def _make_adata(self):
+        def _make_adata(self, min_reads: int):
             # Observation (sample) metadata
             obs = self.read_csv("data/csv/metagenome.obs.csv.gz", index_col=0)
             # Gene Bin metadata (just n_genes)
             var = self.read_csv("data/csv/metagenome.bins.var.csv.gz", index_col=0)
             # Number of reads per bin, per observation
             X = self.read_csv("data/csv/metagenome.bins.X.csv.gz", index_col=0).map(int)
+
+            # Only keep columns where the n_genes is valid
+            X = X.reindex(columns=var["n_genes"].dropna().index)
+
+            # Only keep samples which meet the minimum nubmer of reads
+            X = X.loc[X.sum(axis=1) >= min_reads]
 
             return AnnData(
                 X=X,
@@ -2586,13 +2631,16 @@ def define_metagenome_class(
                 fp,
                 **kwargs
             )
+    return (Metagenome,)
 
 
+@app.cell
+def _(DataPortalDataset, Metagenome, mo):
     # Cache the creation of pangenome objects
-    def make_metagenome(ds: DataPortalDataset):
+    def make_metagenome(ds: DataPortalDataset, min_reads: int):
         with mo.status.spinner("Loading data..."):
-            return Metagenome(ds)
-    return Metagenome, make_metagenome
+            return Metagenome(ds, min_reads)
+    return (make_metagenome,)
 
 
 @app.cell(hide_code=True)
@@ -2728,6 +2776,7 @@ def define_inspect_metagenome(
             # Concatenate each distinct ngs dataset
             rpkm_aligned = self.make_df(layer="rpkm_aligned")
             rpkm_total = self.make_df(layer="rpkm_total")
+            copy_number = self.make_df(layer="copy_number")
 
             # Make the combined metadata table, keeping in mind that the obs information
             # will only be populated when a sample has genes detected for a particular metagenome
@@ -2745,7 +2794,7 @@ def define_inspect_metagenome(
                 rpkm_aligned,
                 obs=obs.reindex(rpkm_aligned.index),
                 var=var.reindex(rpkm_aligned.columns),
-                layers=dict(rpkm_total=rpkm_total)
+                layers=dict(rpkm_total=rpkm_total, copy_number=copy_number)
             )
 
             # Save off the gene names for all bins
@@ -2860,7 +2909,7 @@ def define_inspect_metagenome(
             """).batch(
                 per_total_or_aligned=mo.ui.dropdown(
                     label="Calculate Sequencing Depth Relative To:",
-                    options=["All Reads", "Pangenome-Aligned Reads"] + list(self.adata.var_names),
+                    options=["All Reads", "Pangenome-Aligned Reads", "Copy Number"] + list(self.adata.var_names),
                     value="All Reads"
                 ),
                 include_bins=mo.ui.multiselect(
@@ -2913,6 +2962,8 @@ def define_inspect_metagenome(
                 _abund = self.adata.to_df()
             elif self.per_total_or_aligned == "All Reads":
                 _abund = self.adata.to_df(layer="rpkm_total")
+            elif self.per_total_or_aligned == "Copy Number":
+                _abund = self.adata.to_df(layer="copy_number")
             else:
                 assert self.per_total_or_aligned in self.adata.var_names
                 _abund = self.adata.to_df(layer="rpkm_total")
@@ -3072,8 +3123,8 @@ def define_inspect_metagenome(
                 dendrogram_ratio=(0.15, 0.01),
                 row_colors=row_colors
             )
-            fig.fig.suptitle(f"Relative Sequencing Depth - {self.per_total_or_aligned}", y=1.05)
-            fig.ax_cbar.set_title("RPKM")
+            fig.fig.suptitle(f"Relative Sequencing Depth", y=1.05)
+            fig.ax_cbar.set_title(self.per_total_or_aligned)
             fig.ax_cbar.set_yticklabels(ticktext)
             fig.ax_heatmap.set_ylabel(None)
 
@@ -3549,11 +3600,16 @@ def make_inspect_metagenome(
     InspectMetagenome,
     inspect_metagenome_datasets,
     make_metagenome,
+    min_reads_per_metagenome_ui,
     mo,
 ):
+    mo.stop(min_reads_per_metagenome_ui.value is None)
+
     with mo.status.spinner("Building Metagenome"):
         inspect_metagenome = InspectMetagenome([
-            make_metagenome(metagenome_dataset)
+            make_metagenome(
+                metagenome_dataset,
+                min_reads_per_metagenome_ui.value)
             for metagenome_dataset in inspect_metagenome_datasets
         ])
     return (inspect_metagenome,)
