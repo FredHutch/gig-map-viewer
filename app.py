@@ -2164,6 +2164,15 @@ def _(
                 )
             )
 
+        def genome_presence_table(self, bins):
+            return (
+                self
+                .pg
+                .adata
+                .to_df(layer="present")
+                .reindex(columns=bins)
+            )
+
         def show_bin_overlap(
             self,
             bins: list,
@@ -2174,10 +2183,7 @@ def _(
             # Get the table of which genomes have these bins
             presence = (
                 self
-                .pg
-                .adata
-                .to_df(layer="present")
-                .reindex(columns=bins)
+                .genome_presence_table(bins)
                 .groupby(bins)
                 .apply(len, include_groups=False)
                 .sort_values(ascending=False)
@@ -2346,6 +2352,33 @@ def _(
 
             return ref_phy.compare(comp_phy)
 
+        def score_genomes_table_args(self):
+            return mo.md("""
+            ### Genome Presence/Absence Table
+
+            - {metadata_cols}
+            """).batch(
+                metadata_cols=mo.ui.multiselect(
+                    label="Include Columns:",
+                    options=self.pg.adata.obs_keys(),
+                    value=self.pg.adata.obs_keys()
+                )
+            )
+
+        def score_genomes_table(self, bins: List[str], metadata_cols: List[str], **kwargs):
+            """Return a table with +/- for genome showing the presence/absence of each selected bin."""
+            return (
+                self
+                .genome_presence_table(bins)
+                .replace({0: "-", 1: "+"})
+                .merge(
+                    self.pg.adata.obs.reindex(columns=metadata_cols),
+                    left_index=True,
+                    right_index=True
+                )
+            )
+        
+
     return (CompareGeneBins,)
 
 
@@ -2417,6 +2450,20 @@ def _(
 ):
     mo.stop(run_compare_phylogeny_button.value is False)
     compare_gene_bins.compare_phylogeny(**compare_phylogeny_args.value)
+    return
+
+
+@app.cell
+def _(bin_overlap_args, compare_gene_bins, mo):
+    mo.stop(len(bin_overlap_args.value.get("bins", [])) == 0)
+    score_genomes_table_args = compare_gene_bins.score_genomes_table_args()
+    score_genomes_table_args
+    return (score_genomes_table_args,)
+
+
+@app.cell
+def _(bin_overlap_args, compare_gene_bins, score_genomes_table_args):
+    compare_gene_bins.score_genomes_table(**bin_overlap_args.value, **score_genomes_table_args.value)
     return
 
 
