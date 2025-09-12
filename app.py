@@ -13,6 +13,7 @@ def _(mo):
                     "#pangenome-viewer-gig-map": f"{mo.icon('lucide:info')} About",
                     "#connect-to-database": f"{mo.icon('lucide:database')} Connect",
                     "#inspect-pangenome": f"{mo.icon('lucide:map')} Inspect Pangenome",
+                    "#search-gene-bins": f"{mo.icon('lucide:search')} Search Gene Bins",
                     "#inspect-gene-bin": f"{mo.icon('lucide:box')} Inspect Gene Bin",
                     "#compare-gene-bins": f"{mo.icon('lucide:boxes')} Compare Gene Bins",
                     "#inspect-metagenomes": f"{mo.icon('lucide:test-tube-diagonal')} Inspect Metagenomes",
@@ -1871,6 +1872,71 @@ def _(inspect_pangenome):
 @app.cell
 def _(inspect_pangenome, inspect_pangenome_plot_scatter_args):
     inspect_pangenome.plot_scatter(**inspect_pangenome_plot_scatter_args.value)
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""## Search Gene Bins""")
+    return
+
+
+@app.cell
+def _(DataPortalDataset, Pangenome, make_pangenome, mo, pd, query_params):
+    class SearchGeneBins:
+        pg: Pangenome
+
+        def __init__(self, ds: DataPortalDataset):
+            self.pg = make_pangenome(ds, float(query_params.get("min_prop", 0.5)))
+
+        def args(self):
+            return mo.md("""
+            - {query_str}
+            """).batch(
+                query_str=mo.ui.text(
+                    label="Query String:"
+                )
+            )
+
+        def view(self, query_str: str):
+            if query_str is None or len(query_str) == 0:
+                return mo.md("Enter a query string to search for gene bins.")
+
+            # Search for the gene bins
+            res = pd.concat([
+                bin_df.loc[
+                    bin_df["combined_name"].apply(lambda s: query_str in s)
+                ].assign(bin=bin)
+                for bin, bin_df in self.pg.bin_contents.items()
+            ])
+
+            if res.shape[0] == 0:
+                return mo.md(f"No gene bins found matching '{query_str}'")
+
+            return mo.vstack([
+                mo.md(f"### Binned Genes Matching '{query_str}'"),
+                res
+            ])
+
+    return (SearchGeneBins,)
+
+
+@app.cell
+def _(SearchGeneBins, pangenome_dataset):
+    search_gene_bins = SearchGeneBins(pangenome_dataset)
+    return (search_gene_bins,)
+
+
+@app.cell
+def _(search_gene_bins):
+    search_gene_bins_args = search_gene_bins.args()
+    search_gene_bins_args
+    return (search_gene_bins_args,)
+
+
+@app.cell
+def _(search_gene_bins, search_gene_bins_args):
+    search_gene_bins.view(**search_gene_bins_args.value)
     return
 
 
