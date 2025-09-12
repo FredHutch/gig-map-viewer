@@ -2181,7 +2181,7 @@ def _(
             genome_annot_groups=[]
         ):
             # Get the table of which genomes have these bins
-            presence = (
+            presence: pd.DataFrame = (
                 self
                 .genome_presence_table(bins)
                 .groupby(bins)
@@ -2311,7 +2311,20 @@ def _(
                 ),
                 height=height
             )
-            return fig
+            return mo.vstack([
+                fig,
+                presence.replace(to_replace={
+                    bin: {0: "-", 1: "+"}
+                    for bin in bins
+                }).rename(
+                    columns={0: "Number of Genomes"}
+                ).sort_values(
+                    by="Number of Genomes",
+                    ascending=False
+                ).reindex(
+                    columns = ["Number of Genomes"] + bins
+                )
+            ])
 
         def compare_phylogeny_args(self, bins: List[str], **kwargs):
             """Options used to compare phylogenies of two bins."""
