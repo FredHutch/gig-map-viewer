@@ -357,12 +357,14 @@ def _(mo):
         from Bio.Phylo.TreeConstruction import DistanceMatrix, DistanceTreeConstructor
         from Bio.Phylo.BaseTree import Tree, Clade
         from Bio import Phylo
+        from io import StringIO
 
     return (
         AnnData,
         Clade,
         DistanceMatrix,
-        DistanceTreeConstructor,
+        Phylo,
+        StringIO,
         Tree,
         cluster,
         go,
@@ -409,14 +411,13 @@ def _(
     Clade,
     Dict,
     DistanceMatrix,
-    DistanceTreeConstructor,
+    Phylo,
+    StringIO,
     Tree,
-    defaultdict,
     go,
     make_subplots,
     mo,
     np,
-    pd,
     stats,
 ):
     class Phylogeny:
@@ -431,45 +432,44 @@ def _(
         def __init__(
             self,
             name: str,
-            snp_rate: pd.DataFrame
+            newick_str: str
         ):
             self.name = name
 
-            # Make a distance matrix in BioPython format
-            self.dm = DistanceMatrix(
-                names=list(snp_rate.index.values),
-                matrix=[
-                    l[:(i+1)]
-                    for i, l in enumerate(snp_rate.values.tolist())
-                ]
-            )
+            # Parse the tree from the newick string
+            self.tree = next(Phylo.NewickIO.parse(StringIO(newick_str)))
 
-            # Store the distances as a dict of dicts
-            self.distances = defaultdict(dict)
-            for ix1, name1 in enumerate(self.dm.names):
-                for ix2, name2 in enumerate(self.dm.names):
-                    if ix1 < ix2:
-                        self.distances[name1][name2] = self.dm.matrix[ix2][ix1]
-                        self.distances[name2][name1] = self.dm.matrix[ix2][ix1]
+            self.distances = {
+                n1.name: {
+                    n2.name: self.tree.distance(n1, n2)
+                    for n2 in self.tree.get_terminals()
+                }
+                for n1 in self.tree.get_terminals()
+            }
 
-            # Calculate the neighbor joining tree
-            constructor = DistanceTreeConstructor()
-            self.tree = constructor.nj(self.dm)
-            self.tree.root_at_midpoint()
+            # Find the coordinates
+            self.find_coords()
 
             # Get the children of each node
             self.children = {}
             self._get_children(self.tree.clade)
 
-            self.find_coords()
-
         def find_coords(self):
 
             # Get the X-Y position of each node (framing the whole tree from 0-1)
             self.coords = {}
+
+            self._clade_ix = 0
+
+            # Start at the root
             self._add_coord(self.tree.clade, 0., 1.)
 
         def _add_coord(self, clade: Clade, start: float, stop: float):
+
+            # Label unnamed nodes
+            if clade.name is None:
+                clade.name = f"clade ({self._clade_ix})"
+                self._clade_ix += 1
 
             # If the clade is terminal, put it in the middle
             if clade.is_terminal():
@@ -480,25 +480,35 @@ def _(
                 # See how much space we have to work with
                 range = stop - start
 
-                # Get the relative sizes of each child clade
-                child_sizes = [
-                    len(child.get_terminals())
-                    for child in clade.clades
-                ]
+                # Keep a pointer to the y coordinate which will increase
+                # with each child
+                previous_y = start
 
-                # Position this clade between the two
-                y = start + (range * child_sizes[0] / np.sum(child_sizes))
+                child_ys = []
 
-                self._add_coord(clade.clades[0], start, y)
-                self._add_coord(clade.clades[1], y, stop)
+                # Iterate over each child (there may be more than 1)
+                for child in clade.clades:
+                    # Calculate the new y based on its relative size
+                    new_y = previous_y + (range * len(child.get_terminals()) / len(clade.get_terminals()))
 
-            self.coords[clade.name if clade.name is not None else 'root'] = dict(
+                    self._add_coord(
+                        child,
+                        previous_y,
+                        new_y
+                    )
+                    child_ys.append(np.mean([previous_y, new_y]))
+                    previous_y = new_y
+
+                # Calculate the y as the mean of the position of each child
+                y = np.mean(child_ys)
+
+            self.coords[clade.name] = dict(
                 x=self.tree.depths().get(clade, 0),
                 y=y
             )            
 
         def _get_children(self, clade):
-            self.children['root' if clade.name is None else clade.name] = [child.name for child in clade.clades]
+            self.children[clade.name] = [child.name for child in clade.clades]
             for child in clade.clades:
                 if not child.is_terminal():
                     self._get_children(child)
@@ -585,18 +595,25 @@ def _(
                 )
 
         def align_trees(self, comp: 'Phylogeny'):
+            print(f"Aligning {self.name} to {comp.name}")
 
             made_switch = True
-            for _ in range(3):
+            for _ in range(50):
                 made_switch = False
-                score = self._score_tree_alignment(comp)
                 for node in self.tree.get_nonterminals():
-                    node.clades.reverse()
-                    new_score = self._score_tree_alignment(comp)
-                    if new_score > score:
-                        made_switch = True
-                    else:
-                        node.clades.reverse()
+                    print(f"{node.name} has {len(node.clades):,} children")
+                    # Try exchanging every pair of nodes
+                    for i in range(len(node.clades)-1):
+                        for j in range(i, len(node.clades)):
+                            score = self._score_tree_alignment(comp)
+                            node.clades[i], node.clades[j] = node.clades[j], node.clades[i]
+                            new_score = self._score_tree_alignment(comp)
+                        
+                            if new_score > score:
+                                made_switch = True
+                                print(f"Kept new order - {node.name} {i} <-> {j}")
+                            else:
+                                node.clades[i], node.clades[j] = node.clades[j], node.clades[i]
                 if not made_switch:
                     break
 
@@ -617,7 +634,7 @@ def _(
             }
 
 
-        def compare(self, comp: 'Phylogeny'):
+        def compare(self, comp: 'Phylogeny', height: int, width: int):
             concordance = self._calc_concordance(comp)
 
             # If there are fewer than 3 leafs, this cannot take place
@@ -625,6 +642,10 @@ def _(
                 return mo.md("Not enough shared genomes to compare.")
 
             # Align the two trees against each other
+            self.align_trees(comp)
+            comp.align_trees(self)
+            self.align_trees(comp)
+            comp.align_trees(self)
             self.align_trees(comp)
             comp.align_trees(self)
 
@@ -692,7 +713,9 @@ def _(
                     autorange="reversed"
                 ),
                 margin=dict(l=100, r=400, b=100, t=100),
-                title_text=f"{self.name} vs. {comp.name} (Pairwise Distances - Spearman rho: {concordance:.1f})"
+                title_text=f"{self.name} vs. {comp.name} (Pairwise Distances - Spearman rho: {concordance:.1f})",
+                height=height,
+                width=width
             )
 
             return mo.ui.plotly(fig)
@@ -750,6 +773,258 @@ def _(
 
 
 @app.cell
+def read_bin_phylogeny(Phylogeny, client, lru_cache):
+    # Read the phylogeny for a specific bin
+    @lru_cache
+    def read_bin_phylogeny(
+        project_id: str,
+        dataset_id: str,
+        bin_id: str
+    ):
+        # Get the dataset object
+        ds = client.get_dataset(project_id, dataset_id)
+
+        # Get the list of files
+        files = ds.list_files()
+
+        # Filter down to the newick file expected for the specific bin's tree
+        bin_nwk_file = files.filter_by_pattern(f"data/raxml/{bin_id}.msa.raxml.bestTree")
+
+        # Return None if the file isn't found
+        if not bin_nwk_file:
+            return None
+
+        # Read the file
+        bin_nwk = bin_nwk_file[0].read()
+
+        return Phylogeny(name=bin_id, newick_str=bin_nwk)
+
+    return (read_bin_phylogeny,)
+
+
+@app.cell
+def _(client, lru_cache):
+    @lru_cache
+    def find_build_trees_dataset_id(project_id: str, pangenome_id: str):
+        """Find a dataset which has built trees from a pangenome. If none exist, return None."""
+
+        datasets = client.get_project_by_id(project_id).list_datasets()
+
+        datasets = [ds for ds in datasets if "build-genome-trees-gig-map" in ds.process_id]
+
+        # See if any were built from the pangenome of interest
+        datasets = [ds for ds in datasets if pangenome_id in ds.source_dataset_ids]
+
+        # If there are more than one, filter to just ones that succeeded
+        if len(datasets) > 1:
+            datasets = [ds for ds in datasets if ds.status == "COMPLETED"]
+
+        # Sort by date
+        datasets.sort(key=lambda ds: ds.created_at, reverse=True)
+
+        return datasets[0].id
+
+    return
+
+
+@app.cell
+def _(AnnData, lru_cache, pd, read_bin_contents, read_csv_cached):
+    @lru_cache
+    def build_pangenome_adata(
+        project_id: str,
+        dataset_id: str,
+        min_prop: float,
+        min_genes_rel_median: float
+    ):
+
+        # The variable annotations includes the number of genes for each variable
+        var = pd.DataFrame(dict(
+            n_genes=pd.Series({bin: d.shape[0] for bin, d in read_bin_contents(project_id, dataset_id).items()})
+        ))
+
+        # Only keep bins with genes
+        var = var.query("n_genes > 0")
+
+        # Read in the table listing which genomes contain which bins
+        genome_contents = read_csv_cached(
+            project_id,
+            dataset_id,
+            "data/bin_pangenome/genome_content.long.csv",
+            low_memory=False
+        )
+        if genome_contents.shape[0] == 0:
+            raise Exception("Error: Missing contents in genome_content.long.csv")
+
+        # Split off the genome annotation information into a separate table
+        obs = (
+            genome_contents
+            .drop(columns=["bin", "n_genes_detected", "prop_genes_detected"])
+            .drop_duplicates()
+            .groupby("genome")
+            .head(1)
+            .set_index("genome")
+            .fillna("None")
+        )
+
+        # X will be the proportion of genes detected
+        X = (
+            genome_contents
+            .sort_values(by="prop_genes_detected", ascending=False)
+            .groupby(["genome", "bin"])
+            .head(1)
+            .pivot(
+                index="genome",
+                columns="bin",
+                values="prop_genes_detected"
+            )
+            .fillna(0)
+        )
+        print(f"Genomes x Bins Detected: {X.shape[0]:,} x {X.shape[1]:,}")
+
+        if X.shape[0] == 0 or X.shape[1] == 0:
+            raise ValueError("No data found for this pangenome.")
+
+        # Read in the ANI distance matrix for all genomes
+        genome_ani = read_csv_cached(
+            project_id,
+            dataset_id,
+            "data/distances.csv.gz",
+            index_col=0
+        )
+        print("Building AnnData object")
+
+        # Build an AnnData object
+        adata = AnnData(
+            X=X,
+            obs=obs.reindex(index=X.index),
+            var=var.reindex(index=X.columns),
+            obsp=dict(
+                ani_distance=genome_ani.reindex(
+                    columns=X.index,
+                    index=X.index
+                )
+            )
+        )
+
+        # Make a binary mask layer indicating whether each genome meets the min_prop threshold
+        adata.layers["present"] = (adata.to_df() >= min_prop).astype(int)
+
+        # Calculate the number of genes detected per genome
+        # (counting each entire bin that was detected per genome)
+        adata.obs["n_genes"] = pd.Series({
+            genome: adata.var.loc[genome_contains_bin, "n_genes"].sum()
+            for genome, genome_contains_bin in (adata.to_df(layer="present") == 1).iterrows()
+        })
+
+        # Filter out the genomes which are below the threshold
+        _n_genomes_filter_threshold = (
+            adata.obs['n_genes'].median()
+            *
+            min_genes_rel_median
+        )
+        _n_genomes_filter = (adata.obs['n_genes'] >= _n_genomes_filter_threshold)
+        n_genomes_filtered_out = adata.shape[0] - _n_genomes_filter.sum()
+        adata = adata[_n_genomes_filter]
+
+        # Filter the dataset to only include genomes which include a gene
+        adata = adata[adata.obs["n_genes"] > 0]
+
+        # Compute the number of genomes that each bin is found in
+        adata.var["n_genomes"] = adata.to_df(layer="present").sum()
+
+        # Filter out any bins which are found in 0 genomes
+        adata = adata[:, adata.var["n_genomes"] > 0]
+
+        # Compute the proportion of genomes that each bin is found in
+        adata.var["prevalence"] = adata.var["n_genomes"] / adata.shape[0]
+
+        return adata, n_genomes_filtered_out
+
+
+    return (build_pangenome_adata,)
+
+
+@app.cell
+def _(lru_cache, read_csv_cached):
+    @lru_cache
+    def read_bin_contents(project_id: str, dataset_id: str):
+        return {
+            bin: d.drop(columns=['bin'])
+            for bin, d in read_csv_cached(
+                project_id,
+                dataset_id,
+                "data/bin_pangenome/gene_bins.csv",
+                low_memory=False
+            ).groupby("bin")
+        }
+    return (read_bin_contents,)
+
+
+@app.cell
+def _(build_pangenome_adata, cluster, lru_cache, spatial):
+    @lru_cache
+    def run_linkage_clustering_ani(
+        project_id: str,
+        dataset_id: str,
+        min_prop: float,
+        min_genes_rel_median: float
+    ):
+
+        adata, _ = build_pangenome_adata(project_id, dataset_id, min_prop, min_genes_rel_median)
+    
+        return cluster.hierarchy.to_tree(
+            cluster.hierarchy.linkage(
+                spatial.distance.squareform(
+                    adata.obsp["ani_distance"]
+                ),
+                method="average"
+            ),
+            rd=True
+        )
+    return (run_linkage_clustering_ani,)
+
+
+@app.cell
+def _(lru_cache, read_csv_cached):
+    @lru_cache
+    def get_genome_aln_coords(project_id: str, dataset_id: str, **kwargs):
+        return {
+            sseqid: _genome_coords
+            for sseqid, _genome_coords in read_csv_cached(
+                project_id,
+                dataset_id,
+                "data/align/genomes.aln.csv.gz"
+            ).groupby("sseqid")
+        }
+    return (get_genome_aln_coords,)
+
+
+@app.cell
+def _(build_pangenome_adata, lru_cache, run_linkage_clustering_ani):
+    @lru_cache
+    def find_all_clades(**kwargs):
+        """Get all of the possible monophyletic groupings of genomes, based on a binary tree."""
+
+        adata, _ = build_pangenome_adata(**kwargs)
+
+        # Run linkage clustering on the genomes based on ANI distance
+        _genome_tree, _genome_tree_nodes = run_linkage_clustering_ani(**kwargs)
+
+        return  [
+            set([
+                adata.obs_names[ix]
+                for ix in cn.pre_order(lambda n: n.id)
+                if ix < adata.obs.shape[0]
+            ])
+            for cn in _genome_tree_nodes
+            if cn.get_count() > 1
+        ]
+
+
+    return (find_all_clades,)
+
+
+@app.cell
 def _(
     AnnData,
     DataPortalAssetNotFound,
@@ -759,16 +1034,21 @@ def _(
     Phylogeny,
     Set,
     Tuple,
+    build_pangenome_adata,
+    client,
     cluster,
     defaultdict,
+    find_all_clades,
+    get_genome_aln_coords,
     lru_cache,
     mo,
     np,
     pd,
     query_params,
+    read_bin_contents,
+    read_bin_phylogeny,
     read_csv_cached,
     read_text_cached,
-    spatial,
 ):
     # Define an object with all of the information for a pangenome
     class Pangenome:
@@ -793,71 +1073,29 @@ def _(
 
             # Read in the table of which genes are in which bins
             # and turn into a dict keyed by bin ID
-            self.bin_contents = {
-                bin: d.drop(columns=['bin'])
-                for bin, d in self.read_csv(
-                    "data/bin_pangenome/gene_bins.csv",
-                    low_memory=False
-                ).groupby("bin")
-            }
+            self.bin_contents = read_bin_contents(ds.project_id, ds.id)
 
-            # Build an AnnData object
-            self.adata = self._make_adata()
-
-            # Make a binary mask layer indicating whether each genome meets the min_prop threshold
-            self.adata.layers["present"] = (self.adata.to_df() >= min_prop).astype(int)
-
-            # Calculate the number of genes detected per genome
-            # (counting each entire bin that was detected per genome)
-            self.adata.obs["n_genes"] = pd.Series({
-                genome: self.adata.var.loc[genome_contains_bin, "n_genes"].sum()
-                for genome, genome_contains_bin in (self.adata.to_df(layer="present") == 1).iterrows()
-            })
-
-            # Filter out the genomes which are below the threshold
-            _n_genomes_filter_threshold = (
-                self.adata.obs['n_genes'].median()
-                *
-                float(query_params.get("min_genes_rel_median", '0.5'))
+            # Some of the parameters used to load the pangenome can be modified in the query params
+            kwargs = dict(
+                project_id=ds.project_id,
+                dataset_id=ds.id,
+                min_prop = float(query_params.get(min_prop, "0.5")),
+                min_genes_rel_median = float(query_params.get("min_genes_rel_median", '0.5'))
             )
-            _n_genomes_filter = (self.adata.obs['n_genes'] >= _n_genomes_filter_threshold)
-            self.n_genomes_filtered_out = self.adata.shape[0] - _n_genomes_filter.sum()
-            self.adata = self.adata[_n_genomes_filter]
 
-            # Filter the dataset to only include genomes which include a gene
-            self.adata = self.adata[self.adata.obs["n_genes"] > 0]
-
-            # Compute the number of genomes that each bin is found in
-            self.adata.var["n_genomes"] = self.adata.to_df(layer="present").sum()
-
-            # Filter out any bins which are found in 0 genomes
-            self.adata = self.adata[:, self.adata.var["n_genomes"] > 0]
-
-            # Compute the proportion of genomes that each bin is found in
-            self.adata.var["prevalence"] = self.adata.var["n_genomes"] / self.adata.shape[0]
-
-            # Run linkage clustering on the genomes
-            self._genome_tree, self._genome_tree_nodes = cluster.hierarchy.to_tree(
-                cluster.hierarchy.linkage(
-                    spatial.distance.squareform(
-                        self.adata.obsp["ani_distance"]
-                    ),
-                    method="average"
-                ),
-                rd=True
-            )
+            # Attach an AnnData object with all of the information for this pangenome
+            self.adata, self.n_genomes_filtered_out = build_pangenome_adata(**kwargs)
 
             # Get all of the possible monophyletic groupings of genomes, based on that binary tree
-            self.index_tree()
+            self.clades = find_all_clades(**kwargs)
 
-            # Compute the monophyly score for each bin, and then summarize across each genome
             self.compute_monophyly()
 
             # Read the table listing coordinates in each genome where the genes aligned
-            self.genome_aln_coords = {
-                sseqid: _genome_coords
-                for sseqid, _genome_coords in self.read_csv("data/align/genomes.aln.csv.gz").groupby("sseqid")
-            }
+            self.genome_aln_coords = get_genome_aln_coords(**kwargs)
+
+            # Cached value of the dataset which contains phylogenetic trees for this dataset
+            self._build_trees_dataset_id = None
 
         def compute_monophyly(self):
             """
@@ -968,85 +1206,6 @@ def _(
 
             return (TP + TN) / (TP + TN + FP + FN)
 
-        def index_tree(self):
-            """Get all of the possible monophyletic groupings of genomes, based on that binary tree."""
-
-            self.clades = [
-                set([
-                    self.adata.obs_names[ix]
-                    for ix in cn.pre_order(lambda n: n.id)
-                    if ix < self.adata.obs.shape[0]
-                ])
-                for cn in self._genome_tree_nodes
-                if cn.get_count() > 1
-            ]
-
-        def _make_adata(self, min_reads: int) -> AnnData:
-
-            # The variable annotations includes the number of genes for each variable
-            var = pd.DataFrame(dict(
-                n_genes=pd.Series({bin: d.shape[0] for bin, d in self.bin_contents.items()})
-            ))
-            # Only keep bins with genes
-            var = var.query("n_genes > 0")
-
-            # Read in the table listing which genomes contain which bins
-            _genome_contents = self.read_csv(
-                "data/bin_pangenome/genome_content.long.csv",
-                low_memory=False
-            )
-            if _genome_contents.shape[0] == 0:
-                raise Exception("Error: Missing contents in genome_content.long.csv")
-
-            # Split off the genome annotation information into a separate table
-            obs = (
-                _genome_contents
-                .drop(columns=["bin", "n_genes_detected", "prop_genes_detected"])
-                .drop_duplicates()
-                .groupby("genome")
-                .head(1)
-                .set_index("genome")
-                .fillna("None")
-            )
-
-            # X will be the proportion of genes detected
-            X = (
-                _genome_contents
-                .sort_values(by="prop_genes_detected", ascending=False)
-                .groupby(["genome", "bin"])
-                .head(1)
-                .pivot(
-                    index="genome",
-                    columns="bin",
-                    values="prop_genes_detected"
-                )
-                .fillna(0)
-            )
-            print(f"Genomes x Bins Detected: {X.shape[0]:,} x {X.shape[1]:,}")
-
-            if X.shape[0] == 0 or X.shape[1] == 0:
-                raise ValueError("No data found for this pangenome.")
-
-            # Read in the ANI distance matrix for all genomes
-            _genome_ani = self.read_csv(
-                "data/distances.csv.gz",
-                index_col=0
-            )
-            print("Building AnnData object")
-
-            # Build an AnnData object
-            return AnnData(
-                X=X,
-                obs=obs.reindex(index=X.index),
-                var=var.reindex(index=X.columns),
-                obsp=dict(
-                    ani_distance=_genome_ani.reindex(
-                        columns=X.index,
-                        index=X.index
-                    )
-                )
-            )
-
         def read_csv(self, fp: str, **kwargs):
             return read_csv_cached(
                 self.ds.project_id,
@@ -1081,23 +1240,26 @@ def _(
             return fasta
 
         @lru_cache
-        def bin_phylogeny(self, bin_id: str, n_genes: int) -> Phylogeny:
-            phy = self._read_phylogeny(bin_id, n_genes)
-            return phy
+        def bin_phylogeny(self, bin_id: str) -> Phylogeny:
+            return read_bin_phylogeny(
+                project_id=self.ds.project_id,
+                dataset_id=self.build_trees_dataset_id,
+                bin_id=bin_id
+            )
 
-        def _read_phylogeny(self, bin_id: str, n_genes: int):
-            # Get the pairwise proportion of SNPs for every pair of genomes, across every gene
-            snp_rate = self._merge_gene_snps({
-                gene_id: self._read_gene_snps(gene_id)
-                for gene_id in (
-                    self.bin_contents[bin_id]
-                    .sort_values(by="n_genomes", ascending=False)
-                    .head(n_genes)
-                    ["gene_id"]
-                )
-            })
+        @property
+        def build_trees_dataset_id(self):
+            if self._build_trees_dataset_id is None:
+                self._build_trees_dataset_id = find_build_trees_dataset_id(project_id=self.ds.project_id,pangenome_id=self.ds.id)
+            return self._build_trees_dataset_id
 
-            return Phylogeny(bin_id, snp_rate)
+        def find_build_trees_dataset_id(self):
+            """Find the dataset which contains the phylogenetic trees for this dataset."""
+
+            # Get all of the datasets
+            all_datasets = client.get_project_by_id(self.ds.project_id).list_datasets()
+
+            # Filter to those which are phylogenetic trees
 
         def _merge_gene_snps(self, snps: Dict[str, Tuple[pd.DataFrame, pd.DataFrame]]) -> pd.DataFrame:
             all_genomes = list(set([
@@ -2030,22 +2192,17 @@ def _(DataPortalDataset, Pangenome, make_pangenome, mo, query_params):
             """Options from the user needed to display a phylogeny."""
             return mo.md("""
     ### Display Phylogeny
-
-    - {n_genes}
             """).batch(
-                n_genes=mo.ui.number(
-                    label="Sample N Genes:",
-                    start=1,
-                    step=1,
-                    value=10
-                )
             )
 
-        def display_bin_phylogeny(self, bin_id: str, n_genes: int, **kwargs):
+        def display_bin_phylogeny(self, bin_id: str, **kwargs):
             """Show the phylogeny of a bin."""
 
             # Read the phylogeny of a bin
-            phy = self.pg.bin_phylogeny(bin_id, n_genes)
+            phy = self.pg.bin_phylogeny(bin_id)
+
+            if phy is None:
+                return mo.md(f"No phylogeny available for {bin_id}")
 
             return phy.plot()
 
@@ -2087,22 +2244,7 @@ def _(display_bin_args, inspect_gene_bin):
 
 
 @app.cell
-def _(display_bin_args, display_bin_phylogeny_args, mo):
-    run_phylogeny_button = mo.ui.run_button(label=f"Compute Phylogeny for {display_bin_args.value['bin_id']} (read {display_bin_phylogeny_args.value['n_genes']:,} gene alignments)")
-    run_phylogeny_button
-    return (run_phylogeny_button,)
-
-
-@app.cell
-def _(
-    display_bin_args,
-    display_bin_phylogeny_args,
-    inspect_gene_bin,
-    mo,
-    run_phylogeny_button,
-):
-    mo.stop(not run_phylogeny_button.value)
-
+def _(display_bin_args, display_bin_phylogeny_args, inspect_gene_bin):
     inspect_gene_bin.display_bin_phylogeny(
         **display_bin_phylogeny_args.value,
         **display_bin_args.value
@@ -2333,15 +2475,11 @@ def _(
 
             return mo.md("""
             ### Compare Bin Phylogenies
-            - {n_genes}
             - {ref_bin}
             - {comp_bin}
+            - {height}
+            - {width}
             """).batch(
-                n_genes=mo.ui.number(
-                    start=1,
-                    value=10,
-                    label="Sample N Genes:"
-                ),
                 ref_bin=mo.ui.dropdown(
                     label="Reference Bin:",
                     options=bins,
@@ -2353,17 +2491,31 @@ def _(
                     options=bins,
                     value=bins[1],
                     searchable=True
+                ),
+                height=mo.ui.number(
+                    label="Plot Height:",
+                    value=600
+                ),
+                width=mo.ui.number(
+                    label="Plot Width:",
+                    value=600
                 )
             )
 
-        def compare_phylogeny(self, n_genes: int, ref_bin: str, comp_bin: str):
+        def compare_phylogeny(
+            self,
+            ref_bin: str,
+            comp_bin: str,
+            height: int,
+            width: int
+        ):
             # Read the phylogeny of each bin
             with mo.status.spinner(f"Loading phylogeny for {ref_bin}"):
-                ref_phy = self.pg.bin_phylogeny(ref_bin, n_genes)
+                ref_phy = self.pg.bin_phylogeny(ref_bin)
             with mo.status.spinner(f"Loading phylogeny for {comp_bin}"):
-                comp_phy = self.pg.bin_phylogeny(comp_bin, n_genes)
+                comp_phy = self.pg.bin_phylogeny(comp_bin)
 
-            return ref_phy.compare(comp_phy)
+            return ref_phy.compare(comp_phy, height, width)
 
         def score_genomes_table_args(self):
             return mo.md("""
@@ -2448,20 +2600,7 @@ def _(bin_overlap_args, compare_gene_bins, mo):
 
 
 @app.cell
-def _(compare_phylogeny_args, mo):
-    run_compare_phylogeny_button = mo.ui.run_button(label=f"Compare Phylogeny for {compare_phylogeny_args.value['ref_bin']} and {compare_phylogeny_args.value['comp_bin']} (read {compare_phylogeny_args.value['n_genes']:,} gene alignments each)")
-    run_compare_phylogeny_button
-    return (run_compare_phylogeny_button,)
-
-
-@app.cell
-def _(
-    compare_gene_bins,
-    compare_phylogeny_args,
-    mo,
-    run_compare_phylogeny_button,
-):
-    mo.stop(run_compare_phylogeny_button.value is False)
+def _(compare_gene_bins, compare_phylogeny_args):
     compare_gene_bins.compare_phylogeny(**compare_phylogeny_args.value)
     return
 
