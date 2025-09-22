@@ -651,6 +651,7 @@ def _(
 
             # Regenerate the coordinates
             self.find_coords()
+            comp.find_coords()
 
             # Plot the two trees against each other
 
@@ -1890,6 +1891,7 @@ def _(
                 layout=dict(
                     template="simple_white",
                     yaxis_title_text="Number of Genes",
+                    yaxis_range=[0, rf[["25%", "50%", "75%"]].max().max()],
                     xaxis_title_text="Number of Genomes",
                     title_text="Rarefaction Analysis"
                 )
@@ -1907,6 +1909,7 @@ def _(
             of a particular gene in a genome or metagenome.
 
             - {nbins}
+            - {cumulative}
             - {log_y}
             """).batch(
                 nbins=mo.ui.number(
@@ -1915,13 +1918,17 @@ def _(
                     start=2,
                     step=1
                 ),
+                cumulative=mo.ui.checkbox(
+                    label="Cumulative Gene Count",
+                    value=False
+                ),
                 log_y=mo.ui.checkbox(
                     label="Log Y:",
                     value=True
                 )
             )
 
-        def monophyly_curve(self, nbins: int, log_y: bool):
+        def monophyly_curve(self, nbins: int, cumulative: bool, log_y: bool):
 
             counts, bins = np.histogram(
                 self.pg.adata.var["monophyly"],
@@ -1929,6 +1936,9 @@ def _(
                 weights=self.pg.adata.var["n_genes"]
             )
             bins = 0.5 * (bins[:-1] + bins[1:])
+
+            if cumulative:
+                counts = pd.Series(counts).cumsum().values
 
             return px.bar(
                 x=bins,
@@ -2067,7 +2077,7 @@ def _(DataPortalDataset, Pangenome, make_pangenome, mo, pd, query_params):
             # Search for the gene bins
             res = pd.concat([
                 bin_df.loc[
-                    bin_df["combined_name"].apply(lambda s: query_str in s)
+                    bin_df["combined_name"].apply(lambda s: query_str.lower() in s.lower())
                 ].assign(bin=bin)
                 for bin, bin_df in self.pg.bin_contents.items()
             ])
