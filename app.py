@@ -269,14 +269,28 @@ def _(id_to_name, mo, name_to_id, projects, query_params):
 
 
 @app.cell
-def _(client, filter_datasets_pangenome, mo, project_ui):
+def _(mo, project_ui):
     # Stop if the user has not selected a project
     mo.stop(project_ui.value is None)
+    project_id = project_ui.value
+    return (project_id,)
 
+
+@app.cell
+def _(client, lru_cache):
+    # Cache the process of listing datasets
+    @lru_cache
+    def list_datasets(project_id: str):
+        return client.get_project_by_id(project_id).list_datasets()
+    return (list_datasets,)
+
+
+@app.cell
+def _(filter_datasets_pangenome, list_datasets, project_id):
     # Get the list of pangenome datasets available to the user
     pangenome_datasets = [
         dataset
-        for dataset in client.get_project_by_id(project_ui.value).list_datasets()
+        for dataset in list_datasets(project_id)
         if filter_datasets_pangenome(dataset)
     ]
     pangenome_datasets.sort(key=lambda ds: ds.created_at, reverse=True)
@@ -303,21 +317,27 @@ def _(id_to_name, mo, name_to_id, pangenome_datasets, query_params):
 
 
 @app.cell
-def _(client, mo, pangenome_dataset_ui, project_ui):
-    # Stop if the user has not selected a dataset
+def _(mo, pangenome_dataset_ui):
     mo.stop(pangenome_dataset_ui.value is None)
-
-    # Get the selected dataset
-    pangenome_dataset = (
-        client
-        .get_project_by_id(project_ui.value)
-        .get_dataset_by_id(pangenome_dataset_ui.value)
-    )
-    return (pangenome_dataset,)
+    pangenome_id = pangenome_dataset_ui.value
+    return (pangenome_id,)
 
 
 @app.cell
-def _(mo, pangenome_dataset):
+def _(client, lru_cache):
+    # Cache the fetching of datasets
+    @lru_cache
+    def get_dataset(project_id: str, dataset_id: str):
+        return (
+            client
+            .get_project_by_id(project_id)
+            .get_dataset_by_id(dataset_id)
+        )
+    return (get_dataset,)
+
+
+@app.cell
+def _(get_dataset, mo, pangenome_id, project_id):
     mo.accordion({
         "Analysis Settings": mo.md("""
     | Analysis Settings | |
@@ -337,7 +357,7 @@ def _(mo, pangenome_dataset):
                     int(val * 100) if kw in ["cluster_similarity", "cluster_coverage", "max_dist_genes"]
                     else val
                 )
-                for group, group_attrs in pangenome_dataset.params.additional_properties.items()
+                for group, group_attrs in get_dataset(project_id, pangenome_id).params.additional_properties.items()
                 for kw, val in group_attrs.items()
             }
         ))
@@ -406,7 +426,7 @@ def _(client, lru_cache, mo):
     return (read_text_cached,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(
     Clade,
     Dict,
@@ -804,14 +824,16 @@ def read_bin_phylogeny(Phylogeny, client, lru_cache):
 
 
 @app.cell
-def _(client, lru_cache):
+def _(list_datasets, lru_cache):
     @lru_cache
     def find_build_trees_dataset_id(project_id: str, pangenome_id: str):
         """Find a dataset which has built trees from a pangenome. If none exist, return None."""
 
-        datasets = client.get_project_by_id(project_id).list_datasets()
-
-        datasets = [ds for ds in datasets if "build-genome-trees-gig-map" in ds.process_id]
+        datasets = [
+            ds
+            for ds in list_datasets(project_id)
+            if "build-genome-trees-gig-map" in ds.process_id
+        ]
 
         # See if any were built from the pangenome of interest
         datasets = [ds for ds in datasets if pangenome_id in ds.source_dataset_ids]
@@ -828,7 +850,7 @@ def _(client, lru_cache):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(AnnData, lru_cache, pd, read_bin_contents, read_csv_cached):
     @lru_cache
     def build_pangenome_adata(
@@ -1036,13 +1058,12 @@ def _(
     Set,
     Tuple,
     build_pangenome_adata,
-    client,
     cluster,
     defaultdict,
     find_all_clades,
     get_genome_aln_coords,
+    list_datasets,
     lru_cache,
-    mo,
     np,
     pd,
     query_params,
@@ -1258,7 +1279,7 @@ def _(
             """Find the dataset which contains the phylogenetic trees for this dataset."""
 
             # Get all of the datasets
-            all_datasets = client.get_project_by_id(self.ds.project_id).list_datasets()
+            all_datasets = list_datasets(self.ds.project_id)
 
             # Filter to those which are phylogenetic trees
 
@@ -1335,12 +1356,17 @@ def _(
                 pd.DataFrame(snps).reindex(index=genomes, columns=genomes).fillna(0).astype(int)
             )
 
+    return (Pangenome,)
 
+
+@app.cell
+def _(Pangenome, get_dataset, lru_cache, mo):
     # Cache the creation of pangenome objects
-    def make_pangenome(ds: DataPortalDataset, min_prop: float):
+    @lru_cache
+    def make_pangenome(project_id: str, pangenome_id: str, min_prop: float):
         with mo.status.spinner("Loading data..."):
-            return Pangenome(ds, min_prop)
-    return Pangenome, make_pangenome
+            return Pangenome(get_dataset(project_id, pangenome_id), min_prop)
+    return (make_pangenome,)
 
 
 @app.cell(hide_code=True)
@@ -1376,7 +1402,11 @@ def _(
         pg: Pangenome
 
         def __init__(self, ds: DataPortalDataset):
-            self.pg = make_pangenome(ds, float(query_params.get("min_prop", 0.5)))
+            self.pg = make_pangenome(
+                ds.project_id,
+                ds.id,
+                float(query_params.get("min_prop", 0.5))
+            )
 
             # Precompute the coordinates for the genomes
             # Ordinate using the log-transformed gene abundances, to not overrepresent large bins
@@ -1963,9 +1993,9 @@ def _(
 
 
 @app.cell
-def _(InspectPangenome, pangenome_dataset):
+def _(InspectPangenome, get_dataset, pangenome_id, project_id):
     # Initialize the object using the dataset selected by the user
-    inspect_pangenome = InspectPangenome(pangenome_dataset)
+    inspect_pangenome = InspectPangenome(get_dataset(project_id, pangenome_id))
     return (inspect_pangenome,)
 
 
@@ -2054,12 +2084,16 @@ def _(mo):
 
 
 @app.cell
-def _(DataPortalDataset, Pangenome, make_pangenome, mo, pd, query_params):
+def _(Pangenome, make_pangenome, mo, pd, query_params):
     class SearchGeneBins:
         pg: Pangenome
 
-        def __init__(self, ds: DataPortalDataset):
-            self.pg = make_pangenome(ds, float(query_params.get("min_prop", 0.5)))
+        def __init__(self, project_id: str, pangenome_id: str):
+            self.pg = make_pangenome(
+                project_id,
+                pangenome_id,
+                float(query_params.get("min_prop", 0.5))
+            )
 
         def args(self):
             return mo.md("""
@@ -2094,8 +2128,8 @@ def _(DataPortalDataset, Pangenome, make_pangenome, mo, pd, query_params):
 
 
 @app.cell
-def _(SearchGeneBins, pangenome_dataset):
-    search_gene_bins = SearchGeneBins(pangenome_dataset)
+def _(SearchGeneBins, pangenome_id, project_id):
+    search_gene_bins = SearchGeneBins(project_id, pangenome_id)
     return (search_gene_bins,)
 
 
@@ -2119,12 +2153,12 @@ def _(mo):
 
 
 @app.cell
-def _(DataPortalDataset, Pangenome, make_pangenome, mo, query_params):
+def _(Pangenome, make_pangenome, mo, query_params):
     class InspectGeneBin:
         pg: Pangenome
 
-        def __init__(self, ds: DataPortalDataset):
-            self.pg = make_pangenome(ds, float(query_params.get("min_prop", 0.5)))
+        def __init__(self, project_id: str, pangenome_id: str):
+            self.pg = make_pangenome(project_id, pangenome_id, float(query_params.get("min_prop", 0.5)))
 
         def display_bin_args(self):
             return mo.md(
@@ -2221,8 +2255,8 @@ def _(DataPortalDataset, Pangenome, make_pangenome, mo, query_params):
 
 
 @app.cell
-def _(InspectGeneBin, pangenome_dataset):
-    inspect_gene_bin = InspectGeneBin(pangenome_dataset)
+def _(InspectGeneBin, pangenome_id, project_id):
+    inspect_gene_bin = InspectGeneBin(project_id, pangenome_id)
     return (inspect_gene_bin,)
 
 
@@ -2269,21 +2303,12 @@ def _(mo):
 
 
 @app.cell
-def _(
-    DataPortalDataset,
-    List,
-    Pangenome,
-    make_pangenome,
-    make_subplots,
-    mo,
-    pd,
-    query_params,
-):
+def _(List, Pangenome, make_pangenome, make_subplots, mo, pd, query_params):
     class CompareGeneBins:
         pg: Pangenome
 
-        def __init__(self, ds: DataPortalDataset):
-            self.pg = make_pangenome(ds, float(query_params.get("min_prop", 0.5)))
+        def __init__(self, project_id: str, pangenome_id: str):
+            self.pg = make_pangenome(project_id, pangenome_id, float(query_params.get("min_prop", 0.5)))
 
         def args(self):
             return mo.md("""
@@ -2558,8 +2583,8 @@ def _(
 
 
 @app.cell
-def _(CompareGeneBins, pangenome_dataset):
-    compare_gene_bins = CompareGeneBins(pangenome_dataset)
+def _(CompareGeneBins, pangenome_id, project_id):
+    compare_gene_bins = CompareGeneBins(project_id, pangenome_id)
     return (compare_gene_bins,)
 
 
@@ -2636,14 +2661,14 @@ def _(mo):
 
 
 @app.cell
-def _(client, filter_datasets_metagenome, mo, project_ui):
+def _(filter_datasets_metagenome, list_datasets, mo, project_id, project_ui):
     # Stop if the user has not selected a project
     mo.stop(project_ui.value is None)
 
     # Get the list of metagenome datasets available to the user
     metagenome_datasets = [
         dataset
-        for dataset in client.get_project_by_id(project_ui.value).list_datasets()
+        for dataset in list_datasets(project_id)
         if filter_datasets_metagenome(dataset)
     ]
     metagenome_datasets.sort(key=lambda ds: ds.created_at, reverse=True)
