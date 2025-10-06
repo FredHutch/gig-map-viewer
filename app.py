@@ -608,7 +608,7 @@ def _(
                             score = self._score_tree_alignment(comp)
                             node.clades[i], node.clades[j] = node.clades[j], node.clades[i]
                             new_score = self._score_tree_alignment(comp)
-                        
+
                             if new_score > score:
                                 made_switch = True
                                 print(f"Kept new order - {node.name} {i} <-> {j}")
@@ -972,7 +972,7 @@ def _(build_pangenome_adata, cluster, lru_cache, spatial):
     ):
 
         adata, _ = build_pangenome_adata(project_id, dataset_id, min_prop, min_genes_rel_median)
-    
+
         return cluster.hierarchy.to_tree(
             cluster.hierarchy.linkage(
                 spatial.distance.squareform(
@@ -2552,7 +2552,7 @@ def _(
                     right_index=True
                 )
             )
-        
+
 
     return (CompareGeneBins,)
 
@@ -3879,6 +3879,7 @@ def make_inspect_metagenome(
     mo,
 ):
     mo.stop(min_reads_per_metagenome_ui.value is None)
+    mo.stop(len(inspect_metagenome_datasets) == 0)
 
     with mo.status.spinner("Building Metagenome"):
         inspect_metagenome = InspectMetagenome([
