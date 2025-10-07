@@ -96,6 +96,7 @@ async def _(micropip, mo, running_in_wasm):
         from collections import defaultdict
         from itertools import groupby
         from copy import copy
+        from tempfile import TemporaryDirectory
 
         from cirro import DataPortalLogin, DataPortalDataset
         from cirro.config import list_tenants
@@ -114,6 +115,7 @@ async def _(micropip, mo, running_in_wasm):
         List,
         Optional,
         Set,
+        TemporaryDirectory,
         Tuple,
         copy,
         defaultdict,
@@ -395,7 +397,44 @@ def _(mo):
     )
 
 
-@app.cell
+@app.cell(hide_code=True)
+def _(TemporaryDirectory):
+    def plotly_save_pdf(fig):
+        with TemporaryDirectory() as folder:
+            filepath = f"{folder}/plot.pdf"
+            fig.write_image(filepath)
+            with open(filepath, 'rb') as handle:
+                return handle.read()
+    return
+
+
+@app.cell(hide_code=True)
+def _(TemporaryDirectory):
+    def plotly_save_html(fig):
+        with TemporaryDirectory() as folder:
+            filepath = f"{folder}/plot.html"
+            fig.write_html(filepath)
+            with open(filepath, 'rb') as handle:
+                return handle.read()
+    return (plotly_save_html,)
+
+
+@app.cell(hide_code=True)
+def _(mo, plotly_save_html):
+    def display_fig_and_download_html(fig, label="Download HTML", filename="figure.html"):
+        return mo.vstack([
+            fig,
+            mo.download(
+                label=label,
+                data=plotly_save_html(fig),
+                filename=filename,
+                mimetype="text/html"
+            )
+        ])
+    return (display_fig_and_download_html,)
+
+
+@app.cell(hide_code=True)
 def _(client, lru_cache, mo):
     @lru_cache
     def read_csv_cached(
@@ -1622,7 +1661,7 @@ def _(
                     title_text="Monophyly Score"
                 )
             )
-            return fig
+            return display_fig_and_download_html(fig, label="pangenome_bin_size.html")
 
         def summary_metrics(self):
             return mo.accordion({
@@ -1848,7 +1887,7 @@ def _(
                     yaxis=dict(visible=False),
                     height=height
                 )
-                return fig
+                return display_fig_and_download_html(fig, filename="genome.scatter.html")
 
         def rarefaction_curve_args(self):
             return mo.md("""
@@ -1927,7 +1966,7 @@ def _(
                 )
             )
 
-            return fig
+            return display_fig_and_download_html(fig, filename="rarefaction_curve.html")
 
         def monophyly_curve_args(self):
 
