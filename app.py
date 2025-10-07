@@ -3129,6 +3129,7 @@ def define_inspect_metagenome(
     Set,
     copy,
     defaultdict,
+    display_fig_and_download_html,
     format_log_ticks,
     get_cluster_args_cat1,
     get_cluster_args_cat2,
@@ -3710,7 +3711,7 @@ def define_inspect_metagenome(
                     z="t-SNE 3",
                     **common_kwargs
                 )
-            return fig
+            return display_fig_and_download_html(fig, filename="t-sne.scatter.html")
 
         def cluster_args(self):
             """User input for comparing the distribution of specimen annotations (e.g. clusters vs. anything)."""
@@ -3859,7 +3860,7 @@ def define_inspect_metagenome(
                 width=width,
                 height=height
             )
-            return fig
+            return display_fig_and_download_html(fig, filename="cluster.plot.html")
 
         def cluster_dist_args(self):
             """User input for comparing bin abundances across any specimen annotation (e.g. clusters)."""
@@ -4178,6 +4179,7 @@ def class_comparemetagenometool(
     List,
     Patch,
     Set,
+    display_fig_and_download_html,
     format_log_ticks,
     inspect_metagenome_analysis,
     lru_cache,
@@ -4472,7 +4474,7 @@ def class_comparemetagenometool(
             )
             fig.update_xaxes(type="category")
 
-            return fig
+            return display_fig_and_download_html(fig, filename="compare_metagenome_single_bin.html")
 
         def _filtered_obs(self, query: str):
             if query is not None and len(query) > 0:
