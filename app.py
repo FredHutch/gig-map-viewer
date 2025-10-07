@@ -1426,6 +1426,7 @@ def _(
     Pangenome,
     Tuple,
     cluster,
+    display_fig_and_download_html,
     go,
     make_pangenome,
     make_subplots,
@@ -1968,15 +1969,9 @@ def _(
 
             return display_fig_and_download_html(fig, filename="rarefaction_curve.html")
 
-        def monophyly_curve_args(self):
+        def bin_distribution_args(self, header: str):
 
-            return mo.md("""
-            ### Cladistic Monophyly Per Gene
-
-            Summarize the degree to which each gene can be represented by a single monophyletic clade.
-            This provides a proxy for how accurately a cladistic approach could identify the presence
-            of a particular gene in a genome or metagenome.
-
+            return mo.md(header + """
             - {nbins}
             - {cumulative}
             - {log_y}
@@ -1997,25 +1992,120 @@ def _(
                 )
             )
 
+        def bin_size_distribution_args(self):
+
+            return self.bin_distribution_args("""
+            ### Pangenome Bin Size Distribution
+
+            Each pangenome bin is made up of multiple genes which are clustered together based on
+            co-occurrence across genomes from the collection. This display shows the distribution
+            of bin sizes (defined as the number of genes in each bin).
+
+            """)
+
+        def bin_size_distribution(self, nbins: int, cumulative: bool, log_y: bool):
+
+            return self.display_histogram(
+                "n_genes",
+                "n_genes",
+                nbins,
+                cumulative,
+                log_y,
+                True,
+                "Pangenome Bin Size (# of genes)",
+                "bin_size_distribution"
+            )
+
+        def monophyly_curve_args(self):
+
+            return self.bin_distribution_args("""
+            ### Cladistic Monophyly Per Gene
+
+            Summarize the degree to which each gene can be represented by a single monophyletic clade.
+            This provides a proxy for how accurately a cladistic approach could identify the presence
+            of a particular gene in a genome or metagenome.
+
+            """)
+
         def monophyly_curve(self, nbins: int, cumulative: bool, log_y: bool):
 
-            counts, bins = np.histogram(
-                self.pg.adata.var["monophyly"],
-                bins=nbins,
-                weights=self.pg.adata.var["n_genes"]
+            return self.display_histogram(
+                "monophyly",
+                "n_genes",
+                nbins,
+                cumulative,
+                log_y,
+                False,
+                "Monophyly Score",
+                "monophyly_distribution"
             )
+
+        def display_histogram(
+            self,
+            var_name: str,
+            weights: str,
+            nbins: int,
+            cumulative: bool,
+            log_y: bool,
+            log_x: bool,
+            xlabel: str,
+            filename: str
+        ):
+
+            vals = self.pg.adata.var[var_name]
+            if log_x:
+                vals = vals.apply(np.log10)
+
+            weight_vals = (
+                None if weights is None
+                else
+                self.pg.adata.var[weights]
+            )
+
+            counts, bins = np.histogram(
+                vals,
+                bins=nbins,
+                weights=weight_vals
+            )
+            bin_names = [
+                (
+                    f"{10**bins[i-1]:,} - {10**bins[i]:,}"
+                    if log_x else
+                    f"{bins[i-1]:,} - {bins[i]:,}"
+                )
+                for i in range(1, len(bins))
+            ]
             bins = 0.5 * (bins[:-1] + bins[1:])
 
             if cumulative:
                 counts = pd.Series(counts).cumsum().values
 
-            return px.bar(
+            fig = px.bar(
                 x=bins,
                 y=counts,
-                labels={'x':"Monophyly Score", 'y':'Number of Genes'},
+                labels={'x':xlabel, 'y':'Number of Genes'},
                 template="simple_white",
-                log_y=log_y
+                log_y=log_y,
+                hover_name=bin_names
             )
+            if log_x:
+                log_scale_axis(fig, "xaxis")
+
+            return display_fig_and_download_html(fig, filename=f"{filename}.html")
+
+
+    def log_scale_axis(fig, axis: str):
+        vals = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+        text = ["1", "10", "100", "1k", "10k", "100k", "1M", "10M", "100M", "1B"]
+
+        # Update the x tick labels so that 4 -> 10**4, 5 -> 10**5, etc.
+        fig.update_layout(
+            **{axis: dict(
+                tickmode="array",
+                tickvals=vals,
+                ticktext=text
+            )}
+        )
 
 
     def sort_axis(df: pd.DataFrame, metric="jaccard", method="average"):
@@ -2087,6 +2177,19 @@ def _(inspect_pangenome):
 @app.cell
 def _(inspect_pangenome, rarefaction_curve_args):
     inspect_pangenome.rarefaction_curve(**rarefaction_curve_args.value)
+    return
+
+
+@app.cell
+def _(inspect_pangenome):
+    bin_size_distribution_args = inspect_pangenome.bin_size_distribution_args()
+    bin_size_distribution_args
+    return (bin_size_distribution_args,)
+
+
+@app.cell
+def _(bin_size_distribution_args, inspect_pangenome):
+    inspect_pangenome.bin_size_distribution(**bin_size_distribution_args.value)
     return
 
 
