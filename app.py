@@ -4,7 +4,7 @@ __generated_with = "0.13.15"
 app = marimo.App(width="medium", app_title="Pangenome Viewer ")
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo):
     mo.sidebar(
         [
@@ -27,7 +27,7 @@ def _(mo):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo):
     mo.md(
         r"""
@@ -46,14 +46,14 @@ def _(mo):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _():
     # Load the marimo library in a dedicated cell for efficiency
     import marimo as mo
     return (mo,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _():
     # If the script is running in WASM (instead of local development mode), load micropip
     import sys
@@ -66,7 +66,7 @@ def _():
     return micropip, running_in_wasm
 
 
-@app.cell
+@app.cell(hide_code=True)
 async def _(micropip, mo, running_in_wasm):
     with mo.status.spinner("Loading dependencies"):
         # If we are running in WASM, some dependencies need to be set up appropriately.
@@ -125,7 +125,7 @@ async def _(micropip, mo, running_in_wasm):
     )
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(DataPortalDataset):
     # Define the types of datasets which can be read in containing pangenome information
     # This is used to filter the dataset selector, below
@@ -134,7 +134,7 @@ def _(DataPortalDataset):
     return (filter_datasets_pangenome,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(DataPortalDataset):
     # Define the types of datasets which can be read in
     # This is used to filter the dataset selector, below
@@ -143,14 +143,14 @@ def _(DataPortalDataset):
     return (filter_datasets_metagenome,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo):
     # Get and set the query parameters
     query_params = mo.query_params()
     return (query_params,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(list_tenants):
     # Get the tenants (organizations) available in Cirro
     tenants_by_name = {i["displayName"]: i for i in list_tenants()}
@@ -166,20 +166,20 @@ def _(list_tenants):
     return domain_to_name, tenants_by_name
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""## Connect to Database""")
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo):
     # Use a state element to manage the Cirro client object
     get_client, set_client = mo.state(None)
     return get_client, set_client
 
 
-@app.cell
+@app.cell(hide_code=True)
 def select_tenant(domain_to_name, mo, query_params, tenants_by_name):
     # Let the user select which tenant to log in to (using displayName)
     domain_ui = mo.ui.dropdown(
@@ -191,7 +191,7 @@ def select_tenant(domain_to_name, mo, query_params, tenants_by_name):
     return (domain_ui,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def get_client(DataPortalLogin, domain_ui, get_client, mo):
     # If the user is not yet logged in, and a domain is selected, then give the user instructions for logging in
     # The configuration of this cell and the two below it serve the function of:
@@ -211,14 +211,14 @@ def get_client(DataPortalLogin, domain_ui, get_client, mo):
     return (cirro_login,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def set_client(cirro_login, set_client):
     # Once the user logs in, set the state for the client object
     set_client(cirro_login.await_completion())
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(get_client, mo):
     # Get the Cirro client object (but only take action if the user selected Cirro as the input)
     client = get_client()
@@ -226,14 +226,14 @@ def _(get_client, mo):
     return (client,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(get_client, mo):
     mo.stop(get_client() is not None)
     mo.md("*_Log in to view data_*")
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _():
     # Helper functions for dealing with lists of objects that may be accessed by id or name
     def id_to_name(obj_list: list, id: str) -> str:
@@ -249,7 +249,7 @@ def _():
     return id_to_name, name_to_id
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(client):
     # Set the list of projects available to the user
     projects = client.list_projects()
@@ -257,7 +257,7 @@ def _(client):
     return (projects,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(id_to_name, mo, name_to_id, projects, query_params):
     # Let the user select which project to get data from
     project_ui = mo.ui.dropdown(
@@ -270,7 +270,7 @@ def _(id_to_name, mo, name_to_id, projects, query_params):
     return (project_ui,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo, project_ui):
     # Stop if the user has not selected a project
     mo.stop(project_ui.value is None)
@@ -278,7 +278,7 @@ def _(mo, project_ui):
     return (project_id,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(client, lru_cache):
     # Cache the process of listing datasets
     @lru_cache
@@ -287,7 +287,7 @@ def _(client, lru_cache):
     return (list_datasets,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(filter_datasets_pangenome, list_datasets, project_id):
     # Get the list of pangenome datasets available to the user
     pangenome_datasets = [
@@ -299,13 +299,13 @@ def _(filter_datasets_pangenome, list_datasets, project_id):
     return (pangenome_datasets,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""## Inspect Pangenome""")
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(id_to_name, mo, name_to_id, pangenome_datasets, query_params):
     # Let the user select which pangenome dataset to get data from
     pangenome_dataset_ui = mo.ui.dropdown(
@@ -318,14 +318,14 @@ def _(id_to_name, mo, name_to_id, pangenome_datasets, query_params):
     return (pangenome_dataset_ui,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo, pangenome_dataset_ui):
     mo.stop(pangenome_dataset_ui.value is None)
     pangenome_id = pangenome_dataset_ui.value
     return (pangenome_id,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(client, lru_cache):
     # Cache the fetching of datasets
     @lru_cache
@@ -338,7 +338,7 @@ def _(client, lru_cache):
     return (get_dataset,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(get_dataset, mo, pangenome_id, project_id):
     mo.accordion({
         "Analysis Settings": mo.md("""
@@ -367,7 +367,7 @@ def _(get_dataset, mo, pangenome_id, project_id):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo):
     with mo.status.spinner("Loading dependencies"):
         import pandas as pd
@@ -449,7 +449,7 @@ def _(client, lru_cache, mo):
     return (read_csv_cached,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(client, lru_cache, mo):
     @lru_cache
     def read_text_cached(
@@ -832,7 +832,7 @@ def _(
     return (Phylogeny,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def read_bin_phylogeny(Phylogeny, client, lru_cache):
     # Read the phylogeny for a specific bin
     @lru_cache
@@ -862,7 +862,7 @@ def read_bin_phylogeny(Phylogeny, client, lru_cache):
     return (read_bin_phylogeny,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(list_datasets, lru_cache):
     @lru_cache
     def find_build_trees_dataset_id(project_id: str, pangenome_id: str):
@@ -884,7 +884,7 @@ def _(list_datasets, lru_cache):
         # Sort by date
         datasets.sort(key=lambda ds: ds.created_at, reverse=True)
 
-        return datasets[0].id
+        return datasets[0].id if len(datasets) > 0 else None
 
     return
 
@@ -1006,7 +1006,7 @@ def _(AnnData, lru_cache, pd, read_bin_contents, read_csv_cached):
     return (build_pangenome_adata,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(lru_cache, read_csv_cached):
     @lru_cache
     def read_bin_contents(project_id: str, dataset_id: str):
@@ -1022,7 +1022,7 @@ def _(lru_cache, read_csv_cached):
     return (read_bin_contents,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(build_pangenome_adata, cluster, lru_cache, spatial):
     @lru_cache
     def run_linkage_clustering_ani(
@@ -1046,7 +1046,7 @@ def _(build_pangenome_adata, cluster, lru_cache, spatial):
     return (run_linkage_clustering_ani,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(lru_cache, read_csv_cached):
     @lru_cache
     def get_genome_aln_coords(project_id: str, dataset_id: str, **kwargs):
@@ -1061,7 +1061,7 @@ def _(lru_cache, read_csv_cached):
     return (get_genome_aln_coords,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(build_pangenome_adata, lru_cache, run_linkage_clustering_ani):
     @lru_cache
     def find_all_clades(**kwargs):
@@ -1086,7 +1086,7 @@ def _(build_pangenome_adata, lru_cache, run_linkage_clustering_ani):
     return (find_all_clades,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(
     AnnData,
     DataPortalAssetNotFound,
@@ -1398,7 +1398,7 @@ def _(
     return (Pangenome,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(Pangenome, get_dataset, lru_cache, mo):
     # Cache the creation of pangenome objects
     @lru_cache
