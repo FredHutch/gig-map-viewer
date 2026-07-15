@@ -99,7 +99,6 @@ async def _(micropip, mo, running_in_wasm):
         from tempfile import TemporaryDirectory
 
         from cirro import DataPortalLogin, DataPortalDataset
-        from cirro.config import list_tenants
         from cirro.sdk.exceptions import DataPortalAssetNotFound
 
         # A patch to the Cirro client library is applied when running in WASM
@@ -120,7 +119,6 @@ async def _(micropip, mo, running_in_wasm):
         copy,
         defaultdict,
         groupby,
-        list_tenants,
         lru_cache,
     )
 
@@ -151,10 +149,12 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
-def _(list_tenants):
-    # Get the tenants (organizations) available in Cirro
-    tenants_by_name = {i["displayName"]: i for i in list_tenants()}
-    tenants_by_domain = {i["domain"]: i for i in list_tenants()}
+def _():
+    # Only Fred Hutch is available as a tenant (organization) in Cirro
+    tenants_by_name = {
+        "Fred Hutch": {"displayName": "Fred Hutch", "domain": "fredhutch.cirro.bio"}
+    }
+    tenants_by_domain = {i["domain"]: i for i in tenants_by_name.values()}
 
 
     def domain_to_name(domain):
